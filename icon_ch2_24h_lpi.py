@@ -105,7 +105,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_29") # Puntato al nuovo thread per LPI
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_29")
     
     if not token or not chat_id: return
     
@@ -188,9 +188,20 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Threshold classici per evidenziare il potenziale elettrico (J/kg)
-    my_levels = [1, 5, 10, 20, 30, 40, 50, 75]
-    my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#ffffff"]
+    # Nuova scala LPI ottimizzata per Media Scenari (passi di 3 e poi 5, max 30)
+    my_levels = [1, 3, 6, 9, 12, 15, 20, 25, 30]
+    my_colors = [
+        "#a0e6ff", # 1-3   (Azzurro chiaro)
+        "#00a0ff", # 3-6   (Azzurro scuro)
+        "#00ff00", # 6-9   (Verde)
+        "#ffff00", # 9-12  (Giallo)
+        "#ffaa00", # 12-15 (Arancione)
+        "#ff0000", # 15-20 (Rosso)
+        "#cc0000", # 20-25 (Rosso scuro)
+        "#ff00ff", # 25-30 (Magenta/Fucsia)
+        "#800080"  # >=30  (Viola)
+    ]
+    
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
