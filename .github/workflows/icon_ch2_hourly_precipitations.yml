@@ -43,6 +43,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_2: ${{ secrets.TELEGRAM_THREAD_ID_2 }}
         run: |
           # Sposta lo script e la cartella shapefiles nel working directory delle librerie
           cp icon_ch2_hourly_precipitations.py opendata-nwp-demos/
