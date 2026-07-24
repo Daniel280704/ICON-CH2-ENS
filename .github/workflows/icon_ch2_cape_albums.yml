@@ -1,0 +1,30 @@
+name: Generate ICON-CH2 CAPE Maps
+
+on:
+  schedule:
+    - cron: '45 2,8,14,20 * * *'
+  workflow_dispatch:
+
+jobs:
+  plot_cape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libeccodes-tools libeccodes-dev
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Setup MeteoSwiss Env
+        run: |
+          git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git
+          cd opendata-nwp-demos
+          pip install poetry && poetry config virtualenvs.create false && poetry install --no-ansi
+      - name: Esegui Script CAPE
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          cp icon_ch2_cape_albums.py opendata-nwp-demos/
+          cp -r shapefiles opendata-nwp-demos/ || echo "No shapefiles"
+          cd opendata-nwp-demos
+          pip install pytz shapely
+          python icon_ch2_cape_albums.py
