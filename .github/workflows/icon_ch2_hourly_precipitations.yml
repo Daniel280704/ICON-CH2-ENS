@@ -1,4 +1,4 @@
-name: Generate ICON-CH2 ENS Maps
+name: Precipitazioni orarie
 
 on:
   schedule:
