@@ -105,7 +105,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_31") # Modificato per il nuovo thread
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_31")
     
     if not token or not chat_id: return
     
@@ -169,7 +169,7 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
 
     req = ogd_api.Request(
         collection="ogd-forecasting-icon-ch2",
-        variable="SDI_2", # Variabile aggiornata per il Supercell Detection Index
+        variable="SDI_2",
         ref_time=dt_run_utc,
         perturbed=True,
         lead_time=lead_times_str,
@@ -178,8 +178,8 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     try:
         print(f"Scaricando i dati SDI_2 per le 120 ore...")
         sdi2_data = ogd_api.get_from_ogd(req)
-        # SCENARIO PEGGIORE: prendiamo il massimo tra tutti i membri EPS
-        sdi2_worst_eps = sdi2_data.max(dim="eps")
+        # MEDIA DEGLI SCENARI: calcoliamo la media tra i membri dell'ensemble
+        sdi2_mean_eps = sdi2_data.mean(dim="eps")
     except Exception as e:
         print(f"Errore nel download: {e}")
         return
@@ -188,7 +188,6 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Livelli e colori adattati per un indice di supercella
     my_levels = [0.5, 1, 1.5, 2, 3, 4, 6, 8, 12]
     my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#ffffff"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -208,12 +207,11 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     for h_start, h_end in intervals:
         hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
         
-        # Massimo raggiunto all'interno dell'intervallo temporale
-        sdi2_interval = sdi2_worst_eps.sel(lead_time=hours_slice).max(dim="lead_time")
+        # Massimo raggiunto all'interno dell'intervallo temporale sulla base della media degli scenari
+        sdi2_interval = sdi2_mean_eps.sel(lead_time=hours_slice).max(dim="lead_time")
 
         sdi2_geo = regrid.iconremap(sdi2_interval, destination)
         
-        # Mostriamo solo celle >= 0.5 per mantenere pulita la mappa
         sdi2_geo = sdi2_geo.where(sdi2_geo >= 0.5)
 
         chart = earthkit.plots.Map(domain=domain)
@@ -235,23 +233,23 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
         end_local = dt_run_local + timedelta(hours=h_end)
         
         str_valida = f"Dalle {start_local.strftime('%H:%M')} del {start_local.strftime('%d/%m')} alle {end_local.strftime('%H:%M')} del {end_local.strftime('%d/%m')}"
-        title = f"ICON-CH2 EPS - Supercell Detection Index (SDI_2)\nSCENARIO PEGGIORE | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
+        title = f"ICON-CH2 EPS - Supercell Detection Index (SDI_2)\nMEDIA DEGLI SCENARI | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
         
         chart.title(title)
         chart.legend(label="SDI_2")
 
-        filename = f"sdi2_max_{h_start}_{h_end}.png"
+        filename = f"sdi2_mean_{h_start}_{h_end}.png"
         chart.save(filename)
         percorsi_foto.append(filename)
         
         plt.close(chart.fig)
     
-    caption_album = f"🌪️ ICON-CH2 EPS: Rischio Supercelle (SDI_2 Scenario Peggiore 24h)\nRun {nome_run}"
+    caption_album = f"🌪️ ICON-CH2 EPS: Rischio Supercelle (SDI_2 Media Scenari 24h)\nRun {nome_run}"
     invia_album_telegram(percorsi_foto, caption_album)
     
     for f in percorsi_foto:
         if os.path.exists(f): os.remove(f)
-    del sdi2_data, sdi2_worst_eps
+    del sdi2_data, sdi2_mean_eps
 
 def main():
     print("Cerco l'ultimo run completo ICON-CH2 via Open-Meteo per rischio supercelle (SDI_2)...")
