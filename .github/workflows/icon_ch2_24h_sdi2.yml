@@ -1,8 +1,8 @@
-name: SDI_2 Max 24h (Scenario Peggiore)
+name: SDI_2 Max 24h (Media Scenari)
 
 on:
   schedule:
-    - cron: '24 * * * *' # Sfalsato per non accavallare i runner di grandine/pioggia
+    - cron: '24 * * * *' 
   workflow_dispatch:
 
 jobs:
