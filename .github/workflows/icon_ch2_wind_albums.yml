@@ -9,7 +9,7 @@ jobs:
   plot_wind:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Necessario per fare il push del lock sul repository
+      contents: write 
       
     steps:
       - name: Checkout Repository
@@ -35,26 +35,47 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Assicurati di avere questo secret configurato per il Thread 5
-          TELEGRAM_THREAD_ID_6: ${{ secrets.TELEGRAM_THREAD_ID_6 }}
+          TELEGRAM_THREAD_ID_5: ${{ secrets.TELEGRAM_THREAD_ID_6 }}
         run: |
           cp icon_ch2_wind_albums.py opendata-nwp-demos/
           cp -r shapefiles opendata-nwp-demos/ || echo "No shapefiles"
           
-          # Carica "l'hash" (il lock) esistente se presente
           cp ultima_ora_icon_ch2_wind.txt opendata-nwp-demos/ 2>/dev/null || true
           
           cd opendata-nwp-demos
           pip install pytz shapely
           python icon_ch2_wind_albums.py
           
-          # Una volta terminato, riporta l'hash modificato fuori dalla cartella
           cp ultima_ora_icon_ch2_wind.txt ../
 
       - name: Salva Lock ("Hash") nel Repository 
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add ultima_ora_icon_ch2_wind.txt
-          # Effettua il push solo se il file è cambiato. Il flag [skip ci] evita loop infiniti
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Aggiornamento lock file ICON-CH2 WIND [skip ci]" && git push)
+          
+          LOCK_FILE="ultima_ora_icon_ch2_wind.txt"
+          
+          if [ -f "$LOCK_FILE" ]; then
+            git add "$LOCK_FILE"
+          else
+            echo "Il file $LOCK_FILE non esiste, ignoro l'add."
+          fi
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Aggiornamento lock file ICON-CH2 WIND [skip ci]"
+            
+            MAX_RETRIES=10
+            RETRY_COUNT=0
+            until git push; do
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+                echo "Impossibile fare il push dopo $MAX_RETRIES tentativi."
+                exit 1
+              fi
+              echo "Conflitto rilevato. Ritento push ($RETRY_COUNT/$MAX_RETRIES)..."
+              sleep $((RANDOM % 15 + 5))
+              git pull --rebase origin main
+            done
+          else
+            echo "Nessuna modifica da salvare."
+          fi
