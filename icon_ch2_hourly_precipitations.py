@@ -263,7 +263,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             
             plt.close(chart.fig)
         
-        caption_album = f"🌧 ICON-CH2 EPS: Dettaglio Orario\n🗓 {block_name}\n⚙️ Run {nome_run}"
+        caption_album = f"ICON-CH2 EPS: Dettaglio Orario\n{block_name}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
         
         for f in percorsi_foto:
