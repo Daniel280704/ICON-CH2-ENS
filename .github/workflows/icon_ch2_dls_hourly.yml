@@ -37,7 +37,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_THREAD_ID_15: ${{ secrets.TELEGRAM_THREAD_ID_15 }}
+          TELEGRAM_THREAD_ID_2345: ${{ secrets.TELEGRAM_THREAD_ID_2345 }}
         run: |
           cp icon_ch2_dls_hourly.py opendata-nwp-demos/
           cp -r shapefiles opendata-nwp-demos/ || echo "Nessuna cartella shapefiles"
