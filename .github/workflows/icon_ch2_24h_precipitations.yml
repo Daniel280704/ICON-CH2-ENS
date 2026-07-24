@@ -57,6 +57,15 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add ultima_ora_icon_ch2_stac_24h.txt
-          # Effettua il push solo se il file è cambiato. Il flag [skip ci] evita loop infiniti
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Aggiornamento lock file ICON-CH2 24h [skip ci]" && git push)
+          
+          # Aggiunge qualsiasi file lock modificato per ICON-CH2
+          git add ultima_ora_icon_ch2_*.txt
+          
+          # Se ci sono modifiche da salvare, fa il commit, si allinea al repo e fa il push
+          if ! git diff --staged --quiet; then
+            git commit -m "Aggiornamento lock file ICON-CH2 [skip ci]"
+            git pull --rebase origin main
+            git push
+          else
+            echo "Nessuna modifica da salvare."
+          fi
