@@ -1,0 +1,60 @@
+name: Generate ICON-CH2 Wind Maps
+
+on:
+  schedule:
+    - cron: '13 * * * *'
+  workflow_dispatch:
+
+jobs:
+  plot_wind:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Necessario per fare il push del lock sul repository
+      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: System Dependencies (ecCodes)
+        run: sudo apt-get update && sudo apt-get install -y libeccodes-tools libeccodes-dev
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with: 
+          python-version: "3.11"
+          
+      - name: Setup MeteoSwiss Env
+        run: |
+          git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git
+          cd opendata-nwp-demos
+          pip install poetry 
+          poetry config virtualenvs.create false 
+          poetry install --no-ansi
+          
+      - name: Esegui Script WIND
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Inserisci qua la secret col Thread ID corretto
+          TELEGRAM_THREAD_ID_5: ${{ secrets.TELEGRAM_THREAD_ID_5 }}
+        run: |
+          cp icon_ch2_wind_albums.py opendata-nwp-demos/
+          cp -r shapefiles opendata-nwp-demos/ || echo "No shapefiles"
+          
+          # Carica "l'hash" (il lock) esistente se presente
+          cp ultima_ora_icon_ch2_wind.txt opendata-nwp-demos/ 2>/dev/null || true
+          
+          cd opendata-nwp-demos
+          pip install pytz shapely
+          python icon_ch2_wind_albums.py
+          
+          # Una volta terminato, riporta l'hash modificato fuori dalla cartella
+          cp ultima_ora_icon_ch2_wind.txt ../
+
+      - name: Salva Lock ("Hash") nel Repository 
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add ultima_ora_icon_ch2_wind.txt
+          # Effettua il push solo se il file è cambiato. Il flag [skip ci] evita loop infiniti
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Aggiornamento lock file ICON-CH2 WIND [skip ci]" && git push)
