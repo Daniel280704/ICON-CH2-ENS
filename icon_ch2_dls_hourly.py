@@ -19,8 +19,10 @@ from earthkit.plots.geo import bounds, domains
 from earthkit.plots.styles import Style
 from earthkit.data import config
 
-from meteodatalab import ogd_api
+from meteodatalab import ogd_api, grib_decoder, data_source
 from meteodatalab.operators import regrid
+from meteodatalab.operators.destagger import destagger
+from meteodatalab.operators.vertical_interpolation import TargetCoordinates, TargetCoordinatesAttrs, interpolate_k2any
 from rasterio.crs import CRS
 
 warnings.filterwarnings('ignore')
@@ -184,40 +186,71 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
+    # Scarichiamo le costanti verticali del modello per ottenere l'altezza geometrica
+    print("Scaricamento costanti verticali modello (HHL -> HFL)...")
+    url_z = ogd_api.get_collection_asset_url(
+        collection_id="ch.meteoschweiz.ogd-forecasting-icon-ch2",
+        asset_id="vertical_constants_icon-ch2-eps.grib2"
+    )
+    ds_z = grib_decoder.load(
+        source=data_source.URLDataSource(urls=[url_z]),
+        request={"param": "HHL"},
+        geo_coords=lambda uuid: {}
+    )
+    HFL = destagger(ds_z["HHL"].squeeze(drop=True), "z")
+
+    # Impostiamo il target di interpolazione esattamente a 6000 m s.l.m.
+    attrs_z = TargetCoordinatesAttrs(
+        standard_name="height_above_mean_sea_level",
+        long_name="height above the mean sea level",
+        units="m",
+        positive="up",
+    )
+    target_coords_6km = TargetCoordinates(
+        type_of_level="heightAboveSea",
+        values=[6000],
+        attrs=attrs_z,
+    )
+
     for block_name, ore_list in blocchi.items():
         print(f"\nGenerazione album DLS: {block_name}")
         lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in ore_list]
 
-        # Richieste separate per bypassare il limite stringa di Pydantic
-        req_u_upper = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U", pressure_level=[500], ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
-        req_v_upper = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V", pressure_level=[500], ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        # Richiediamo U e V senza specificare la pressione per ottenere tutti i livelli verticali del modello
+        req_u_upper = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        req_v_upper = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
         
         req_u_surf = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
         req_v_surf = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
         
         try:
-            data_u_up = ogd_api.get_from_ogd(req_u_upper).mean(dim="eps")
-            data_v_up = ogd_api.get_from_ogd(req_v_upper).mean(dim="eps")
+            data_u_ml = ogd_api.get_from_ogd(req_u_upper).mean(dim="eps")
+            data_v_ml = ogd_api.get_from_ogd(req_v_upper).mean(dim="eps")
             data_u_sfc = ogd_api.get_from_ogd(req_u_surf).mean(dim="eps")
             data_v_sfc = ogd_api.get_from_ogd(req_v_surf).mean(dim="eps")
+            
+            # Interpolazione vettoriale a 6000 metri esatti
+            u_6km = interpolate_k2any(field=data_u_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
+            v_6km = interpolate_k2any(field=data_v_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
+
         except Exception as e:
-            print(f"Salto il blocco {block_name} causa errore download: {e}")
+            print(f"Salto il blocco {block_name} causa errore download/interpolazione: {e}")
             continue
 
         percorsi_foto = []
         for h in ore_list:
-            u_500 = data_u_up["U"].sel(pressure_level=500, lead_time=np.timedelta64(h, 'h'))
-            v_500 = data_v_up["V"].sel(pressure_level=500, lead_time=np.timedelta64(h, 'h'))
+            u_up = u_6km.sel(lead_time=np.timedelta64(h, 'h')).squeeze(drop=True)
+            v_up = v_6km.sel(lead_time=np.timedelta64(h, 'h')).squeeze(drop=True)
             u_sfc = data_u_sfc["U_10M"].sel(lead_time=np.timedelta64(h, 'h'))
             v_sfc = data_v_sfc["V_10M"].sel(lead_time=np.timedelta64(h, 'h'))
 
-            u_500_geo = regrid.iconremap(u_500, destination)
-            v_500_geo = regrid.iconremap(v_500, destination)
+            u_up_geo = regrid.iconremap(u_up, destination)
+            v_up_geo = regrid.iconremap(v_up, destination)
             u_sfc_geo = regrid.iconremap(u_sfc, destination)
             v_sfc_geo = regrid.iconremap(v_sfc, destination)
 
-            du = u_500_geo - u_sfc_geo
-            dv = v_500_geo - v_sfc_geo
+            du = u_up_geo - u_sfc_geo
+            dv = v_up_geo - v_sfc_geo
             shear_geo = np.sqrt(du**2 + dv**2)
 
             chart = earthkit.plots.Map(domain=domain)
@@ -235,7 +268,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
             target_local = dt_run_local + timedelta(hours=h)
             str_valida = f"Valido per le: {target_local.strftime('%H:%M del %d/%m')}"
-            title = f"ICON-CH2 EPS - Deep Layer Shear 0-6 km (m/s)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
+            title = f"ICON-CH2 EPS - Deep Layer Shear SFC-6km (m/s)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
             chart.title(title)
             chart.legend(label="DLS (m/s)")
 
@@ -244,13 +277,13 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             percorsi_foto.append(filename)
             plt.close(chart.fig)
         
-        caption_album = f"🌪️ DLS 0-6km (Deep Layer Shear)\n{block_name}\nRun {nome_run}"
+        caption_album = f"🌪️ DLS (SFC-6000m Geometrici)\n{block_name}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
         
         for f in percorsi_foto:
             if os.path.exists(f): os.remove(f)
             
-        del data_u_up, data_v_up, data_u_sfc, data_v_sfc
+        del data_u_ml, data_v_ml, data_u_sfc, data_v_sfc, u_6km, v_6km
         time.sleep(15)
 
 def main():
