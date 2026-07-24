@@ -104,7 +104,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_16") 
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_2346") 
     
     if not token or not chat_id: return
     
