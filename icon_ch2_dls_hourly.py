@@ -276,7 +276,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             gc.collect()
         
         if percorsi_foto:
-            caption_album = f"🌪️ DLS Media EPS (SFC-6000m Geometrici)\n{block_name}\nRun {nome_run}"
+            caption_album = f"DLS Media EPS (SFC-6000m Geometrici)\n{block_name}\nRun {nome_run}"
             invia_album_telegram(percorsi_foto, caption_album)
             
             for f in percorsi_foto:
