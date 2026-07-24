@@ -36,7 +36,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # Inserisci qua la secret col Thread ID corretto
-          TELEGRAM_THREAD_ID_5: ${{ secrets.TELEGRAM_THREAD_ID_5 }}
+          TELEGRAM_THREAD_ID_6: ${{ secrets.TELEGRAM_THREAD_ID_6 }}
         run: |
           cp icon_ch2_wind_albums.py opendata-nwp-demos/
           cp -r shapefiles opendata-nwp-demos/ || echo "No shapefiles"
