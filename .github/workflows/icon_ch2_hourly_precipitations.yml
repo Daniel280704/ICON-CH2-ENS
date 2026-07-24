@@ -45,11 +45,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           # Sposta lo script e la cartella shapefiles nel working directory delle librerie
-          cp icon_ch2_hourly_albums.py opendata-nwp-demos/
+          cp icon_ch2_hourly_precipitations.py opendata-nwp-demos/
           cp -r shapefiles opendata-nwp-demos/ || echo "Attenzione: Cartella shapefiles non trovata"
           cd opendata-nwp-demos
           pip install pytz
-          python icon_ch2_hourly_albums.py
+          python icon_ch2_hourly_precipitations.py
 
       - name: Save Lock File
         uses: actions/cache/save@v4
