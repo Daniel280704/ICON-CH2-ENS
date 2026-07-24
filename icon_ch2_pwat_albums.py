@@ -112,7 +112,7 @@ def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     # Impostato sul Thread 12, ricordati di configurarlo nei Secrets di GitHub
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_12")
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_41")
     
     if not token or not chat_id:
         print("❌ TELEGRAM_TOKEN o TELEGRAM_CHAT_ID non trovati")
@@ -283,7 +283,7 @@ def genera_album_pwat(dt_run_utc: datetime, nome_run: str):
             plt.close(chart.fig)
         
         if percorsi_foto:
-            caption_album = f"💧 ICON-CH2 EPS: Acqua Precipitabile (TQV)\n{block_name}\nRun {nome_run}"
+            caption_album = f"ICON-CH2 EPS: Acqua Precipitabile (TQV)\n{block_name}\nRun {nome_run}"
             invia_album_telegram(percorsi_foto, caption_album)
             
             for f in percorsi_foto:
