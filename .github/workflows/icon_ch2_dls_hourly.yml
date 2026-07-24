@@ -1,4 +1,4 @@
-name: Deep Layer Shear 0-6km
+name: Deep Layer Shear SFC-6km
 
 on:
   schedule:
