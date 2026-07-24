@@ -57,15 +57,6 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          
-          # Aggiunge qualsiasi file lock modificato per ICON-CH2
-          git add ultima_ora_icon_ch2_*.txt
-          
-          # Se ci sono modifiche da salvare, fa il commit, si allinea al repo e fa il push
-          if ! git diff --staged --quiet; then
-            git commit -m "Aggiornamento lock file ICON-CH2 [skip ci]"
-            git pull --rebase origin main
-            git push
-          else
-            echo "Nessuna modifica da salvare."
-          fi
+          git add ultima_ora_icon_ch2_24_precipitations.txt
+          # Fa il commit, scarica eventuali lock file pushati dagli altri script in parallelo e poi pusha
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Aggiornamento lock file ICON-CH2 WIND [skip ci]" && git pull --rebase origin main && git push)
