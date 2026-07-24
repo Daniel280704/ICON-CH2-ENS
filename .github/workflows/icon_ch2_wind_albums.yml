@@ -1,4 +1,4 @@
-name: Gust
+name: Generate ICON-CH2 Wind Maps
 
 on:
   schedule:
@@ -35,7 +35,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Inserisci qua la secret col Thread ID corretto
+          # Assicurati di avere questo secret configurato per il Thread 5
           TELEGRAM_THREAD_ID_6: ${{ secrets.TELEGRAM_THREAD_ID_6 }}
         run: |
           cp icon_ch2_wind_albums.py opendata-nwp-demos/
