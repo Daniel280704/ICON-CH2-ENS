@@ -145,11 +145,8 @@ def invia_album_telegram(file_paths: list, caption: str):
 
 def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
     blocchi = {}
-    # Step di 3 ore (8 mappe al giorno)
     for h in range(3, 121, 3):
         dt_target = dt_run_local + timedelta(hours=h)
-        
-        # Selezioniamo il giorno corretto (la mezzanotte chiude il giorno precedente)
         if dt_target.hour == 0:
             date_str = (dt_target.date() - timedelta(days=1)).strftime("%d/%m/%Y")
         else:
@@ -216,20 +213,17 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             print(f"Scaricamento e calcolo media ensemble per l'ora +{h}...")
             lead_time_str = [f"P{h // 24}DT{h % 24}H"]
 
-            # Ritorno a perturbed=True ma per una singola ora
             req_u_up = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
             req_v_up = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
             req_u_sfc = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
             req_v_sfc = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
             
             try:
-                # Applichiamo la media istantaneamente per svuotare la RAM
                 data_u_ml = ogd_api.get_from_ogd(req_u_up).mean(dim="eps")
                 data_v_ml = ogd_api.get_from_ogd(req_v_up).mean(dim="eps")
                 data_u_sfc = ogd_api.get_from_ogd(req_u_sfc).mean(dim="eps")
                 data_v_sfc = ogd_api.get_from_ogd(req_v_sfc).mean(dim="eps")
                 
-                # Interpolazione vettoriale a 6000 metri sulla media
                 u_6km = interpolate_k2any(field=data_u_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
                 v_6km = interpolate_k2any(field=data_v_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
 
@@ -239,8 +233,10 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
             u_up = u_6km.squeeze(drop=True)
             v_up = v_6km.squeeze(drop=True)
-            u_sfc = data_u_sfc["U_10M"].squeeze(drop=True)
-            v_sfc = data_v_sfc["V_10M"].squeeze(drop=True)
+            
+            # FIX APPLICATO QUI:
+            u_sfc = data_u_sfc.squeeze(drop=True)
+            v_sfc = data_v_sfc.squeeze(drop=True)
 
             u_up_geo = regrid.iconremap(u_up, destination)
             v_up_geo = regrid.iconremap(v_up, destination)
@@ -276,7 +272,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             percorsi_foto.append(filename)
             plt.close(chart.fig)
             
-            # Pulizia manuale
             del data_u_ml, data_v_ml, data_u_sfc, data_v_sfc, u_6km, v_6km, u_up, v_up, u_sfc, v_sfc, shear_geo
             gc.collect()
         
