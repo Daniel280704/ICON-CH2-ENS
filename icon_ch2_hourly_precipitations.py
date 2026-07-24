@@ -46,7 +46,6 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
             
     if end_idx == -1: return False, "", None
     
-    # "L'hash" o "lock" temporale usato per bloccare i doppioni
     ultima_ora_valida_str = times[end_idx]
     
     dt_end_local = datetime.fromisoformat(ultima_ora_valida_str)
@@ -70,16 +69,13 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
         print(f"⏳ Run {nome_run} in caricamento... ({actual_points}/{expected_points} ore)")
         return False, "", None
         
-    # Controllo del lock file
     if os.path.exists(FILE_LAST_HOUR):
         with open(FILE_LAST_HOUR, "r") as f:
             ultima_ora_salvata = f.read().strip()
-        # Se il dato trasla nel tempo e produce una nuova ora valida, lo eseguirà
         if ultima_ora_valida_str <= ultima_ora_salvata:
             print(f"✅ Run ICON-CH2 {nome_run} già elaborato (Ultimo blocco: {ultima_ora_valida_str}).")
             return False, "", None
 
-    # Aggiorna il lock file
     with open(FILE_LAST_HOUR, "w") as f:
         f.write(ultima_ora_valida_str)
 
@@ -185,16 +181,35 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala dei colori
     my_levels = [0.1, 0.2, 0.5, 1, 2, 3, 5, 7, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200]
     my_colors = ["#e6f2ff", "#99ccff", "#3399ff", "#004cff", "#66e666", "#33cc33", "#009900", "#99cc00", "#ffe600", "#e6b300", "#ff9900", "#ff6600", "#ff3300", "#ff3333", "#b30000", "#cc33ff", "#8000cc", "#4d0080"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
-    regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
-    prov_feature = None
+    # =========================================================================
+    # PREPARAZIONE CONFINI (fuori dal loop per ottimizzare i tempi)
+    # =========================================================================
+    # 1. Basi sottili per tutto quello che è fuori dal Piemonte (grigio)
+    regions_feature_thin = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='#888888', facecolor='none', linewidth=0.4)
+    
+    # 2. Geometrie specifiche per evidenziare il Piemonte
+    piemonte_region_geoms = []
+    try:
+        ne_reader = shpreader.Reader(shpreader.natural_earth(resolution='10m', category='cultural', name='admin_1_states_provinces'))
+        piemonte_region_geoms = [rec.geometry for rec in ne_reader.records() if rec.attributes.get('name') in ['Piemonte', 'Piedmont']]
+    except Exception:
+        pass
+
+    piemonte_prov_geoms = []
+    other_prov_geoms = []
     shp_path = "shapefiles/ProvCM01012026_WGS84.shp"
     if os.path.exists(shp_path):
-        prov_feature = cfeature.ShapelyFeature(shpreader.Reader(shp_path).geometries(), ccrs.PlateCarree(), edgecolor='black', facecolor='none', linewidth=0.5, linestyle=':')
+        for rec in shpreader.Reader(shp_path).records():
+            # ISTAT usa COD_REG = 1 per il Piemonte
+            if rec.attributes.get('COD_REG') == 1 or rec.attributes.get('DEN_REG') == 'Piemonte':
+                piemonte_prov_geoms.append(rec.geometry)
+            else:
+                other_prov_geoms.append(rec.geometry)
+    # =========================================================================
 
     lats = [45.07, 44.38, 44.90, 44.91, 45.32, 45.45, 45.56, 45.92]
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
@@ -237,17 +252,27 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             chart = earthkit.plots.Map(domain=domain)
             chart.grid_cells(prec_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
 
-            chart.ax.add_feature(regions_feature)
-            if prov_feature:
-                chart.ax.add_feature(prov_feature)
-            else:
-                chart.borders()
+            # Aggiunta Confini a strati (Z-order garantisce le sovrapposizioni corrette)
+            chart.ax.add_feature(cfeature.BORDERS, edgecolor='#888888', linewidth=0.5, zorder=2) # Nazioni sottili
+            chart.ax.add_feature(regions_feature_thin, zorder=2) # Tutte le regioni europee sottili
+            
+            # Altre province fuori dal Piemonte (estremamente fini e puntinate)
+            if other_prov_geoms:
+                chart.ax.add_geometries(other_prov_geoms, ccrs.PlateCarree(), edgecolor='#999999', facecolor='none', linewidth=0.2, linestyle=':', zorder=3)
+            
+            # Focus Piemonte (Province nere tratteggiate, Regione nera spessa)
+            if piemonte_prov_geoms:
+                chart.ax.add_geometries(piemonte_prov_geoms, ccrs.PlateCarree(), edgecolor='black', facecolor='none', linewidth=0.7, linestyle=':', zorder=4)
+            if piemonte_region_geoms:
+                chart.ax.add_geometries(piemonte_region_geoms, ccrs.PlateCarree(), edgecolor='black', facecolor='none', linewidth=1.6, zorder=5)
 
-            chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
+            # Pallino Rivoli
+            chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree(), zorder=6)
 
+            # Capoluoghi
             for lon, lat, sigla in zip(lons, lats, sigle):
-                chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
-                chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
+                chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree(), zorder=6)
+                chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree(), zorder=7)
 
             start_local = dt_run_local + timedelta(hours=h-1)
             end_local = dt_run_local + timedelta(hours=h)
