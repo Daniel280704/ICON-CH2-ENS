@@ -37,7 +37,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_THREAD_ID_3: ${{ secrets.TELEGRAM_THREAD_ID_3 }}
+          TELEGRAM_THREAD_ID_114: ${{ secrets.TELEGRAM_THREAD_ID_114 }}
         run: |
           # Copia script e cartella dal repo base all'interno della cartella temporanea
           cp icon_ch2_cumulative_precipitations.py opendata-nwp-demos/
