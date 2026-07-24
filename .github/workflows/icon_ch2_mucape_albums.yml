@@ -1,4 +1,4 @@
-name: Generate ICON-CH2 MUCAPE Maps
+name: MUCAPE
 
 on:
   schedule:
