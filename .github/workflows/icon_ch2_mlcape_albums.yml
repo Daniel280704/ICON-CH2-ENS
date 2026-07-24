@@ -1,0 +1,68 @@
+name: Generate ICON-CH2 MLCAPE Maps
+
+on:
+  schedule:
+    - cron: '13 * * * *'
+  workflow_dispatch:
+
+jobs:
+  plot_mlcape:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Necessario per fare il push del lock sul repository
+      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: System Dependencies (ecCodes)
+        run: sudo apt-get update && sudo apt-get install -y libeccodes-tools libeccodes-dev
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with: 
+          python-version: "3.11"
+          
+      - name: Setup MeteoSwiss Env
+        run: |
+          git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git
+          cd opendata-nwp-demos
+          pip install poetry 
+          poetry config virtualenvs.create false 
+          poetry install --no-ansi
+          
+      - name: Esegui Script MLCAPE
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_8: ${{ secrets.TELEGRAM_THREAD_ID_8 }}
+        run: |
+          cp icon_ch2_mlcape_albums.py opendata-nwp-demos/
+          cp -r shapefiles opendata-nwp-demos/ || echo "No shapefiles"
+          
+          # Carica "l'hash" (il lock) esistente se presente
+          cp ultima_ora_icon_ch2_mlcape.txt opendata-nwp-demos/ 2>/dev/null || true
+          
+          cd opendata-nwp-demos
+          pip install pytz shapely
+          python icon_ch2_mlcape_albums.py
+          
+          # Una volta terminato, riporta l'hash modificato fuori dalla cartella
+          cp ultima_ora_icon_ch2_mlcape.txt ../
+
+      - name: Salva Lock ("Hash") nel Repository 
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Aggiunge qualsiasi file lock modificato per ICON-CH2
+          git add ultima_ora_icon_ch2_*.txt
+          
+          # Se ci sono modifiche da salvare, fa il commit, si allinea al repo e fa il push
+          if ! git diff --staged --quiet; then
+            git commit -m "Aggiornamento lock file ICON-CH2 MLCAPE [skip ci]"
+            git pull --rebase origin main
+            git push
+          else
+            echo "Nessuna modifica da salvare."
+          fi
