@@ -1,4 +1,4 @@
-name: Generate ICON-CH2 Wind Maps
+name: Wind Gust
 
 on:
   schedule:
