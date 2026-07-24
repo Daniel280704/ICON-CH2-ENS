@@ -105,7 +105,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_22") # Modificato per il nuovo thread
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_22") 
     
     if not token or not chat_id: return
     
@@ -164,21 +164,19 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     if last_h < 120:
         intervals.append((last_h, 120))
 
-    # A differenza delle precipitazioni cumulative, scarichiamo TUTTE le ore
-    # per poter estrarre il massimo assoluto verificatosi nell'intervallo
     lead_times_needed = list(range(1, 121))
     lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
 
     req = ogd_api.Request(
         collection="ogd-forecasting-icon-ch2",
-        variable="HAIL_MAX", # Nome variabile per grandine max (da verificare con le specifiche MeteoSwiss se necessario)
+        variable="DHAIL_MX", # Nome variabile corretto per grandine max
         ref_time=dt_run_utc,
         perturbed=True,
         lead_time=lead_times_str,
     )
     
     try:
-        print(f"Scaricando i dati HAIL_MAX per le 120 ore...")
+        print(f"Scaricando i dati DHAIL_MX per le 120 ore...")
         hail_data = ogd_api.get_from_ogd(req)
         # SCENARIO PEGGIORE: prendiamo il massimo tra tutti i membri EPS
         hail_worst_eps = hail_data.max(dim="eps")
@@ -208,7 +206,6 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     percorsi_foto = []
 
     for h_start, h_end in intervals:
-        # Estraiamo esattamente le ore appartenenti a questo intervallo
         hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
         
         # Troviamo la grandine massima raggiunta all'interno dell'intervallo temporale selezionato
