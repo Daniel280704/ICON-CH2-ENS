@@ -105,7 +105,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_2345") # Thread 15 per DLS
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_2345")
     
     if not token or not chat_id: return
     
@@ -170,7 +170,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Colori ottimizzati per evidenziare i threshold del DLS (rischio over 15-20 m/s)
     my_levels = [2, 5, 10, 15, 20, 25, 30, 40, 50]
     my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#2d004d"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -189,25 +188,29 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         print(f"\nGenerazione album DLS: {block_name}")
         lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in ore_list]
 
-        # Doppia richiesta per scaricare quota e suolo
-        req_upper = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable=["U", "V"], pressure_level=[500], ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
-        req_surf = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable=["U_10M", "V_10M"], ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        # Richieste separate per bypassare il limite stringa di Pydantic
+        req_u_upper = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U", pressure_level=[500], ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        req_v_upper = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V", pressure_level=[500], ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        
+        req_u_surf = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        req_v_surf = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
         
         try:
-            data_up = ogd_api.get_from_ogd(req_upper).mean(dim="eps")
-            data_surf = ogd_api.get_from_ogd(req_surf).mean(dim="eps")
+            data_u_up = ogd_api.get_from_ogd(req_u_upper).mean(dim="eps")
+            data_v_up = ogd_api.get_from_ogd(req_v_upper).mean(dim="eps")
+            data_u_sfc = ogd_api.get_from_ogd(req_u_surf).mean(dim="eps")
+            data_v_sfc = ogd_api.get_from_ogd(req_v_surf).mean(dim="eps")
         except Exception as e:
             print(f"Salto il blocco {block_name} causa errore download: {e}")
             continue
 
         percorsi_foto = []
         for h in ore_list:
-            u_500 = data_up["U"].sel(pressure_level=500, lead_time=np.timedelta64(h, 'h'))
-            v_500 = data_up["V"].sel(pressure_level=500, lead_time=np.timedelta64(h, 'h'))
-            u_sfc = data_surf["U_10M"].sel(lead_time=np.timedelta64(h, 'h'))
-            v_sfc = data_surf["V_10M"].sel(lead_time=np.timedelta64(h, 'h'))
+            u_500 = data_u_up["U"].sel(pressure_level=500, lead_time=np.timedelta64(h, 'h'))
+            v_500 = data_v_up["V"].sel(pressure_level=500, lead_time=np.timedelta64(h, 'h'))
+            u_sfc = data_u_sfc["U_10M"].sel(lead_time=np.timedelta64(h, 'h'))
+            v_sfc = data_v_sfc["V_10M"].sel(lead_time=np.timedelta64(h, 'h'))
 
-            # Regrid prima della matematica per allineare perfettamente le matrici
             u_500_geo = regrid.iconremap(u_500, destination)
             v_500_geo = regrid.iconremap(v_500, destination)
             u_sfc_geo = regrid.iconremap(u_sfc, destination)
@@ -246,7 +249,8 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         
         for f in percorsi_foto:
             if os.path.exists(f): os.remove(f)
-        del data_up, data_surf
+            
+        del data_u_up, data_v_up, data_u_sfc, data_v_sfc
         time.sleep(15)
 
 def main():
