@@ -30,8 +30,10 @@ config.set("cache-policy", "temporary")
 LATITUDE = 45.07
 LONGITUDE = 7.54
 FILE_LAST_HOUR = "ultima_ora_icon_ch2_stac.txt"
+RUN_DURATION = 120
+START_DELAY = 1
 
-def estrai_limiti_run(hourly_data: dict, ref_param: str) -> tuple[bool, str, datetime]:
+def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
     if not times or not mean_vals: return False, "", None
@@ -44,42 +46,44 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str) -> tuple[bool, str, dat
             
     if end_idx == -1: return False, "", None
     
-    rome_tz = pytz.timezone("Europe/Rome")
+    # "L'hash" o "lock" temporale usato per bloccare i doppioni
     ultima_ora_valida_str = times[end_idx]
     
-    dt_end_local = rome_tz.localize(datetime.fromisoformat(ultima_ora_valida_str))
-    dt_end_utc = dt_end_local.astimezone(timezone.utc)
+    dt_end_local = datetime.fromisoformat(ultima_ora_valida_str)
+    dt_end_utc = dt_end_local - timedelta(seconds=utc_offset_sec)
+    dt_run_utc_naive = dt_end_utc - timedelta(hours=RUN_DURATION)
+    dt_start_utc = dt_run_utc_naive + timedelta(hours=START_DELAY)
     
-    # Troviamo l'innesco sapendo che ICON-CH2 dura 120 ore
-    dt_run_utc = dt_end_utc - timedelta(hours=120)
-    
-    # Cerchiamo l'indice di partenza del forecast (+1 ora di delay)
-    dt_start_local = (dt_run_utc + timedelta(hours=1)).astimezone(rome_tz)
+    dt_start_local = dt_start_utc + timedelta(seconds=utc_offset_sec)
     start_time_str = dt_start_local.strftime("%Y-%m-%dT%H:%M")
+    nome_run = dt_run_utc_naive.strftime("%H") + "Z"
     
     try:
         start_idx = times.index(start_time_str)
     except ValueError:
         return False, "", None
         
-    expected_points = 120
+    expected_points = RUN_DURATION - START_DELAY + 1
     actual_points = end_idx - start_idx + 1
-    nome_run = dt_run_utc.strftime("%H") + "Z"
     
     if actual_points < expected_points:
         print(f"⏳ Run {nome_run} in caricamento... ({actual_points}/{expected_points} ore)")
         return False, "", None
         
+    # Controllo del lock file
     if os.path.exists(FILE_LAST_HOUR):
         with open(FILE_LAST_HOUR, "r") as f:
             ultima_ora_salvata = f.read().strip()
+        # Se il dato trasla nel tempo e produce una nuova ora valida, lo eseguirà
         if ultima_ora_valida_str <= ultima_ora_salvata:
-            print(f"✅ Run ICON-CH2 {nome_run} già elaborato.")
+            print(f"✅ Run ICON-CH2 {nome_run} già elaborato (Ultimo blocco: {ultima_ora_valida_str}).")
             return False, "", None
 
+    # Aggiorna il lock file
     with open(FILE_LAST_HOUR, "w") as f:
         f.write(ultima_ora_valida_str)
 
+    dt_run_utc = dt_run_utc_naive.replace(tzinfo=timezone.utc)
     return True, nome_run, dt_run_utc
 
 def fetch_dati_con_retry() -> dict:
@@ -105,7 +109,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_2") # <-- Modifica qui usando os.getenv!
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_2")
     
     if not token or not chat_id: return
     
@@ -181,19 +185,17 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala dei colori perfezionata: maggiore dettaglio < 10 mm/h
+    # Scala dei colori
     my_levels = [0.1, 0.2, 0.5, 1, 2, 3, 5, 7, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200]
     my_colors = ["#e6f2ff", "#99ccff", "#3399ff", "#004cff", "#66e666", "#33cc33", "#009900", "#99cc00", "#ffe600", "#e6b300", "#ff9900", "#ff6600", "#ff3300", "#ff3333", "#b30000", "#cc33ff", "#8000cc", "#4d0080"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
-    # Gestione livelli confini Geografici
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
     prov_feature = None
     shp_path = "shapefiles/ProvCM01012026_WGS84.shp"
     if os.path.exists(shp_path):
         prov_feature = cfeature.ShapelyFeature(shpreader.Reader(shp_path).geometries(), ccrs.PlateCarree(), edgecolor='black', facecolor='none', linewidth=0.5, linestyle=':')
 
-    # Dati per capoluoghi
     lats = [45.07, 44.38, 44.90, 44.91, 45.32, 45.45, 45.56, 45.92]
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
@@ -235,17 +237,14 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             chart = earthkit.plots.Map(domain=domain)
             chart.grid_cells(prec_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
 
-            # Aggiunta Confini (Regione spessa, Provincia fine)
             chart.ax.add_feature(regions_feature)
             if prov_feature:
                 chart.ax.add_feature(prov_feature)
             else:
                 chart.borders()
 
-            # Aggiunta Pallino Rivoli
             chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
 
-            # Aggiunta Capoluoghi con Sigle
             for lon, lat, sigla in zip(lons, lats, sigle):
                 chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
                 chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
@@ -278,7 +277,8 @@ def main():
     if not data: sys.exit(0)
         
     hourly = data.get("hourly", {})
-    is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m")
+    utc_offset = data.get("utc_offset_seconds", 0)
+    is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m", utc_offset)
     
     if is_new:
         print(f"🚀 Lancio generazione Album Orari ICON-CH2 per il RUN {nome_run} ({dt_run_utc})")
