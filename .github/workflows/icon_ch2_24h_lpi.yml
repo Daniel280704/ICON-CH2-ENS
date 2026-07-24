@@ -1,4 +1,4 @@
-name: LPI Max 24h (Media Scenari)
+name: LPI Max 3h
 
 on:
   schedule:
