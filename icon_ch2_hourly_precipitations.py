@@ -105,18 +105,20 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = "TELEGRAM_THREAD_ID_2"
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_2") # <-- Modifica qui usando os.getenv!
+    
     if not token or not chat_id: return
     
     if len(file_paths) == 1:
         url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        payload = {"chat_id": chat_id, "caption": caption}
+        
+        if thread_id:
+            payload["message_thread_id"] = thread_id
+            
         try:
             with open(file_paths[0], "rb") as photo:
-                requests.post(url, data={
-                    "chat_id": chat_id, 
-                    "message_thread_id": thread_id, 
-                    "caption": caption
-                }, files={"photo": photo})
+                requests.post(url, data=payload, files={"photo": photo})
         except Exception as e:
             print(f"Errore invio singola foto: {e}")
         return
@@ -133,12 +135,12 @@ def invia_album_telegram(file_paths: list, caption: str):
         })
         files[f"photo_{idx}"] = open(path, "rb")
 
+    payload = {"chat_id": chat_id, "media": json.dumps(media)}
+    if thread_id:
+        payload["message_thread_id"] = thread_id
+
     try:
-        requests.post(url, data={
-            "chat_id": chat_id, 
-            "message_thread_id": thread_id, 
-            "media": json.dumps(media)
-        }, files=files)
+        requests.post(url, data=payload, files=files)
         print(f"📸 Album Telegram inviato con successo ({len(file_paths)} mappe).")
     except Exception as e:
         print(f"Errore invio album Telegram: {e}")
