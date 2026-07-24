@@ -1,0 +1,59 @@
+name: Generate ICON-CH2 ENS Maps
+
+on:
+  schedule:
+    - cron: '13 * * * *'
+  workflow_dispatch:
+
+jobs:
+  plot_map:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: System Dependencies (ecCodes)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools libeccodes-dev
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Ecosistema MeteoSwiss (meteodata-lab)
+        run: |
+          git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git
+          cd opendata-nwp-demos
+          pip install poetry
+          poetry config virtualenvs.create false
+          poetry install --no-ansi
+
+      - name: Restore Lock File
+        uses: actions/cache/restore@v4
+        with:
+          path: opendata-nwp-demos/ultima_ora_icon_ch2_stac.txt
+          key: run-lock-${{ github.run_id }}
+          restore-keys: |
+            run-lock-
+
+      - name: Esegui Python Script
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Sposta lo script e la cartella shapefiles nel working directory delle librerie
+          cp icon_ch2_hourly_albums.py opendata-nwp-demos/
+          cp -r shapefiles opendata-nwp-demos/ || echo "Attenzione: Cartella shapefiles non trovata"
+          cd opendata-nwp-demos
+          pip install pytz
+          python icon_ch2_hourly_albums.py
+
+      - name: Save Lock File
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: opendata-nwp-demos/ultima_ora_icon_ch2_stac.txt
+          key: run-lock-${{ github.run_id }}
