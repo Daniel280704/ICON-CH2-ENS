@@ -331,7 +331,7 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
             plt.close(chart.fig)
         
         if percorsi_foto:
-            caption_album = f"🌪️ ICON-CH2 EPS: Raffiche Vento + Direzione\n🗓 {block_name}\n⚙️ Run {nome_run}"
+            caption_album = f"ICON-CH2 EPS: Raffiche Vento\n{block_name}\nRun {nome_run}"
             invia_album_telegram(percorsi_foto, caption_album)
             
             for f in percorsi_foto:
