@@ -148,21 +148,27 @@ def invia_album_telegram(file_paths: list, caption: str):
         for f in files.values():
             f.close()
 
-def genera_album_24h(dt_run_utc: datetime, nome_run: str):
+def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     rome_tz = pytz.timezone("Europe/Rome")
     dt_run_local = dt_run_utc.astimezone(rome_tz)
     
-    intervals = []
+    # Raggruppamento per giornate, generando fasce allineate agli orari 00, 03, 06, 09...
+    intervals_by_day = {}
     last_h = 0
     
     for h in range(1, 121):
         dt_target = dt_run_local + timedelta(hours=h)
-        if dt_target.hour == 0:
-            intervals.append((last_h, h))
+        # Troviamo lo scatto triorario locale o la fine della run
+        if dt_target.hour % 3 == 0 or h == 120:
+            if last_h < h:
+                # La fascia appartiene al giorno di inizio dell'intervallo
+                dt_start_interval = dt_run_local + timedelta(hours=last_h)
+                day_str = dt_start_interval.strftime('%d/%m/%Y')
+                
+                if day_str not in intervals_by_day:
+                    intervals_by_day[day_str] = []
+                intervals_by_day[day_str].append((last_h, h))
             last_h = h
-            
-    if last_h < 120:
-        intervals.append((last_h, 120))
 
     lead_times_needed = list(range(1, 121))
     lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
@@ -178,8 +184,6 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     try:
         print(f"Scaricando i dati LPI_MAX per le 120 ore...")
         lpi_data = ogd_api.get_from_ogd(req)
-        # MEDIA SCENARI: prendiamo la media dell'ensemble invece del massimo
-        lpi_mean_eps = lpi_data.mean(dim="eps")
     except Exception as e:
         print(f"Errore nel download: {e}")
         return
@@ -188,18 +192,11 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Nuova scala LPI ottimizzata per Media Scenari (passi di 3 e poi 5, max 30)
+    # Scala LPI ottimizzata per Media Scenari (max 30+)
     my_levels = [1, 3, 6, 9, 12, 15, 20, 25, 30]
     my_colors = [
-        "#a0e6ff", # 1-3   (Azzurro chiaro)
-        "#00a0ff", # 3-6   (Azzurro scuro)
-        "#00ff00", # 6-9   (Verde)
-        "#ffff00", # 9-12  (Giallo)
-        "#ffaa00", # 12-15 (Arancione)
-        "#ff0000", # 15-20 (Rosso)
-        "#cc0000", # 20-25 (Rosso scuro)
-        "#ff00ff", # 25-30 (Magenta/Fucsia)
-        "#800080"  # >=30  (Viola)
+        "#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", 
+        "#ffaa00", "#ff0000", "#cc0000", "#ff00ff", "#800080"
     ]
     
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -214,56 +211,57 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
-    percorsi_foto = []
-
-    for h_start, h_end in intervals:
-        hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
+    for day_str, intervals in intervals_by_day.items():
+        percorsi_foto = []
         
-        # Troviamo il massimo potenziale LPI raggiunto nel delta temporale analizzato
-        lpi_interval = lpi_mean_eps.sel(lead_time=hours_slice).max(dim="lead_time")
+        for h_start, h_end in intervals:
+            hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
+            
+            # Calcolo corretto: PRIMA troviamo il massimo per ogni scenario nella fascia oraria, POI facciamo la media
+            lpi_interval = lpi_data.sel(lead_time=hours_slice).max(dim="lead_time").mean(dim="eps")
 
-        # Regrid a celle regolari
-        lpi_geo = regrid.iconremap(lpi_interval, destination)
+            # Regrid a celle regolari
+            lpi_geo = regrid.iconremap(lpi_interval, destination)
+            lpi_geo = lpi_geo.where(lpi_geo >= 1)
+
+            chart = earthkit.plots.Map(domain=domain)
+            chart.grid_cells(lpi_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
+
+            chart.ax.add_feature(regions_feature)
+            if prov_feature:
+                chart.ax.add_feature(prov_feature)
+            else:
+                chart.borders()
+
+            chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
+
+            for lon, lat, sigla in zip(lons, lats, sigle):
+                chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
+                chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
+
+            start_local = dt_run_local + timedelta(hours=h_start)
+            end_local = dt_run_local + timedelta(hours=h_end)
+            
+            orario_str = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M')}"
+            title = f"ICON-CH2 EPS - LPI MAX (Media dei Massimi)\n{day_str} | Fascia {orario_str}\nRun: {dt_run_utc.strftime('%d/%m %H:%M UTC')}"
+            
+            chart.title(title)
+            chart.legend(label="LPI (J/kg)")
+
+            filename = f"lpi_max_{h_start}_{h_end}.png"
+            chart.save(filename)
+            percorsi_foto.append(filename)
+            
+            plt.close(chart.fig)
         
-        # Filtriamo le tracce minime per tenere la mappa leggibile
-        lpi_geo = lpi_geo.where(lpi_geo >= 1)
-
-        chart = earthkit.plots.Map(domain=domain)
-        chart.grid_cells(lpi_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
-
-        chart.ax.add_feature(regions_feature)
-        if prov_feature:
-            chart.ax.add_feature(prov_feature)
-        else:
-            chart.borders()
-
-        chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
-
-        for lon, lat, sigla in zip(lons, lats, sigle):
-            chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
-            chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
-
-        start_local = dt_run_local + timedelta(hours=h_start)
-        end_local = dt_run_local + timedelta(hours=h_end)
+        # Inviamo l'album raccolto per l'intera giornata (massimo 8 mappe)
+        caption_album = f"ICON-CH2 EPS: Rischio Fulmini\nFasce triorarie del {day_str}\nRun {nome_run}"
+        invia_album_telegram(percorsi_foto, caption_album)
         
-        str_valida = f"Dalle {start_local.strftime('%H:%M')} del {start_local.strftime('%d/%m')} alle {end_local.strftime('%H:%M')} del {end_local.strftime('%d/%m')}"
-        title = f"ICON-CH2 EPS - LPI MAX (Lightning Potential Index)\nMEDIA SCENARI | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
-        
-        chart.title(title)
-        chart.legend(label="LPI (J/kg)")
+        for f in percorsi_foto:
+            if os.path.exists(f): os.remove(f)
 
-        filename = f"lpi_max_{h_start}_{h_end}.png"
-        chart.save(filename)
-        percorsi_foto.append(filename)
-        
-        plt.close(chart.fig)
-    
-    caption_album = f"⚡ ICON-CH2 EPS: Rischio Fulmini LPI_MAX (Media Scenari 24h)\nRun {nome_run}"
-    invia_album_telegram(percorsi_foto, caption_album)
-    
-    for f in percorsi_foto:
-        if os.path.exists(f): os.remove(f)
-    del lpi_data, lpi_mean_eps
+    del lpi_data
 
 def main():
     print("Cerco l'ultimo run completo ICON-CH2 via Open-Meteo per l'indice LPI...")
@@ -275,8 +273,8 @@ def main():
     is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m", utc_offset)
     
     if is_new:
-        print(f"🚀 Lancio generazione Album LPI giornalieri/spezzoni per il RUN {nome_run} ({dt_run_utc})")
-        genera_album_24h(dt_run_utc, nome_run)
+        print(f"🚀 Lancio generazione Album LPI giornalieri per il RUN {nome_run} ({dt_run_utc})")
+        genera_album_giornalieri(dt_run_utc, nome_run)
     else:
         print("Nessun nuovo run completo trovato. Uscita.")
 
