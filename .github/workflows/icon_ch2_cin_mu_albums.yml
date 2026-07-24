@@ -1,4 +1,4 @@
-name: Generate ICON-CH2 CIN_MU Maps
+name: CIN_MU
 
 on:
   schedule:
