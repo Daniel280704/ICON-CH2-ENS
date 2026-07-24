@@ -280,7 +280,7 @@ def genera_album_mucape(dt_run_utc: datetime, nome_run: str):
             plt.close(chart.fig)
         
         if percorsi_foto:
-            caption_album = f"⚡ ICON-CH2 EPS: MUCAPE (Instabilità)\n🗓 {block_name}\n⚙️ Run {nome_run}"
+            caption_album = f"ICON-CH2 EPS: MUCAPE (Instabilità)\n{block_name}\nRun {nome_run}"
             invia_album_telegram(percorsi_foto, caption_album)
             
             for f in percorsi_foto:
