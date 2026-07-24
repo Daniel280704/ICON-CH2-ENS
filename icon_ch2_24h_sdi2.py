@@ -178,7 +178,7 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     try:
         print(f"Scaricando i dati SDI_2 per le 120 ore...")
         sdi2_data = ogd_api.get_from_ogd(req)
-        # MEDIA DEGLI SCENARI: calcoliamo la media tra i membri dell'ensemble
+        # MEDIA DEGLI SCENARI
         sdi2_mean_eps = sdi2_data.mean(dim="eps")
     except Exception as e:
         print(f"Errore nel download: {e}")
@@ -188,8 +188,11 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
+    # Definizione livelli e colori
     my_levels = [0.5, 1, 1.5, 2, 3, 4, 6, 8, 12]
-    my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#ffffff"]
+    # Modificato: rimosso bianco ('#ffffff') alla fine, sostituito con viola scuro ('#660066')
+    my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#660066"]
+    
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
@@ -207,7 +210,7 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     for h_start, h_end in intervals:
         hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
         
-        # Massimo raggiunto all'interno dell'intervallo temporale sulla base della media degli scenari
+        # Massimo raggiunto nell'intervallo temporale (sulla media degli scenari)
         sdi2_interval = sdi2_mean_eps.sel(lead_time=hours_slice).max(dim="lead_time")
 
         sdi2_geo = regrid.iconremap(sdi2_interval, destination)
@@ -215,7 +218,8 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
         sdi2_geo = sdi2_geo.where(sdi2_geo >= 0.5)
 
         chart = earthkit.plots.Map(domain=domain)
-        chart.grid_cells(sdi2_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
+        # Specifichiamo extend="max" per usare l'ultimo colore per valori sopra l'ultimo livello
+        chart.grid_cells(sdi2_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels, extend="max"))
 
         chart.ax.add_feature(regions_feature)
         if prov_feature:
