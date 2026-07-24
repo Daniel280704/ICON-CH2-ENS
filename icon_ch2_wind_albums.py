@@ -76,7 +76,7 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str) -> tuple[bool, str, dat
         with open(FILE_LAST_HOUR, "r") as f:
             ultima_ora_salvata = f.read().strip()
         if ultima_ora_valida_str <= ultima_ora_salvata:
-            print(f"✅ Run ICON-CH2 WIND {nome_run} già elaborato.")
+            print(f"✅ Run ICON-CH2 Wind {nome_run} già elaborato.")
             return False, "", None
 
     with open(FILE_LAST_HOUR, "w") as f:
@@ -111,7 +111,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_6") # Sostituisci se usi un altro Thread ID
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_6")
     
     if not token or not chat_id:
         print("❌ TELEGRAM_TOKEN o TELEGRAM_CHAT_ID non trovati")
@@ -202,8 +202,8 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala colori VMAX: blu (debole) -> verde -> giallo -> arancio -> rosso (forte)
-    my_levels = [0, 2, 4, 6, 8, 10, 12, 15, 18, 20, 23, 25, 28, 30]
+    # Scala colori VMAX in km/h (14 livelli, 13 colori)
+    my_levels = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130]
     my_colors = ["#ffffff", "#99d9ff", "#4da6ff", "#0066ff", "#00cc00", "#ffff00", "#ffcc00", 
                  "#ff9900", "#ff6600", "#ff3300", "#cc0000", "#990000", "#660000"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -223,6 +223,7 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
         
         lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in ore_list]
 
+        # Richiesta unicamente per VMAX_10M
         req_vmax = ogd_api.Request(
             collection="ogd-forecasting-icon-ch2",
             variable="VMAX_10M",
@@ -231,31 +232,10 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
             lead_time=lead_times_str,
         )
         
-        req_u = ogd_api.Request(
-            collection="ogd-forecasting-icon-ch2",
-            variable="U_10M",
-            ref_time=dt_run_utc,
-            perturbed=True,
-            lead_time=lead_times_str,
-        )
-        
-        req_v = ogd_api.Request(
-            collection="ogd-forecasting-icon-ch2",
-            variable="V_10M",
-            ref_time=dt_run_utc,
-            perturbed=True,
-            lead_time=lead_times_str,
-        )
-        
         try:
-            print(f"  ⬇️  Scarico dati vento (VMAX_10M, U_10M, V_10M) per {len(ore_list)} ore...")
+            print(f"  ⬇️  Scarico dati vento (VMAX_10M) per {len(ore_list)} ore...")
             vmax_raw = ogd_api.get_from_ogd(req_vmax)
-            u_raw = ogd_api.get_from_ogd(req_u)
-            v_raw = ogd_api.get_from_ogd(req_v)
-            
             vmax_mean = vmax_raw.mean(dim="eps")
-            u_mean = u_raw.mean(dim="eps")
-            v_mean = v_raw.mean(dim="eps")
             print(f"  ✅ Dati scaricati: {len(ore_list)} ore")
         except Exception as e:
             print(f"  ❌ Salto il blocco {block_name} causa errore: {e}")
@@ -265,49 +245,24 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
         
         for h in ore_list:
             vmax_step = vmax_mean.sel(lead_time=np.timedelta64(h, 'h'))
-            u_step = u_mean.sel(lead_time=np.timedelta64(h, 'h'))
-            v_step = v_mean.sel(lead_time=np.timedelta64(h, 'h'))
-            
-            vmax_geo = regrid.iconremap(vmax_step, destination)
-            u_geo = regrid.iconremap(u_step, destination)
-            v_geo = regrid.iconremap(v_step, destination)
+            # Conversione da m/s a km/h
+            vmax_step_kmh = vmax_step * 3.6 
+            vmax_geo = regrid.iconremap(vmax_step_kmh, destination)
 
             chart = earthkit.plots.Map(domain=domain)
             chart.grid_cells(vmax_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
 
-            step = 4
-            lons_vec = u_geo.coords["lon"].values[::step]
-            lats_vec = u_geo.coords["lat"].values[::step]
-            
-            u_sub = u_geo.values[::step, ::step]
-            v_sub = v_geo.values[::step, ::step]
-            
-            lon_mesh, lat_mesh = np.meshgrid(lons_vec, lats_vec)
-            
-            if lon_mesh.shape == u_sub.shape and lat_mesh.shape == u_sub.shape:
-                speed = np.sqrt(u_sub**2 + v_sub**2)
-                speed_max = np.nanmax(speed)
-                if speed_max > 0:
-                    u_norm = u_sub / speed_max * 0.2
-                    v_norm = v_sub / speed_max * 0.2
-                else:
-                    u_norm = u_sub * 0
-                    v_norm = v_sub * 0
-                
-                chart.ax.quiver(lon_mesh, lat_mesh, u_norm, v_norm, speed, 
-                              cmap='YlOrRd', scale=25, scale_units='inches', 
-                              transform=ccrs.PlateCarree(), zorder=8, alpha=0.8)
-            else:
-                print(f"    ⚠️  Dimensioni vettori non compatibili, skip arrows")
-
+            # Aggiunta Confini
             chart.ax.add_feature(regions_feature)
             if prov_feature:
                 chart.ax.add_feature(prov_feature)
             else:
                 chart.borders()
 
+            # Aggiunta Pallino Rivoli
             chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree(), zorder=12)
 
+            # Aggiunta Capoluoghi con Sigle
             for lon, lat, sigla in zip(lons, lats, sigle):
                 chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree(), zorder=12)
                 chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree(), zorder=12)
@@ -316,8 +271,8 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
             end_local = dt_run_local + timedelta(hours=h)
             str_valida = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M del %d/%m')}"
 
-            chart.title(f"ICON-CH2 EPS - Raffiche Vento (m/s) + Direzione\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}")
-            chart.legend(label="Raffiche Vento (m/s)")
+            chart.title(f"ICON-CH2 EPS - Raffiche Vento (km/h)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}")
+            chart.legend(label="Raffiche Vento (km/h)")
             
             f_name = f"wind_{h}.png"
             chart.save(f_name)
@@ -341,7 +296,7 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
         else:
             print(f"  ⚠️  Nessuna mappa generata per {block_name}")
             
-        del vmax_raw, u_raw, v_raw, vmax_mean, u_mean, v_mean
+        del vmax_raw, vmax_mean
         print(f"  💤 Attendo 15 secondi prima del prossimo blocco...")
         time.sleep(15)
 
