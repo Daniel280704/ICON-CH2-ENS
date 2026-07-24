@@ -1,4 +1,4 @@
-name: SDI_2 Max 24h (Media Scenari)
+name: SDI_2 Max 24h
 
 on:
   schedule:
