@@ -6,6 +6,7 @@ import requests
 import urllib3
 import pytz
 import numpy as np
+import xarray as xr
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, timezone
 import warnings
@@ -29,9 +30,9 @@ config.set("cache-policy", "temporary")
 
 LATITUDE = 45.07
 LONGITUDE = 7.54
-# File di lock rinominato per non creare conflitti con lo script EPS
 FILE_LAST_HOUR = "ultima_ora_icon_ch2_hail_24h_det.txt"
-RUN_DURATION = 120
+# Abbassato a 48h poiché la corsa deterministica di ICON-CH2 arriva solitamente al massimo a +48h
+RUN_DURATION = 48 
 START_DELAY = 1
 
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
@@ -67,7 +68,7 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
     actual_points = end_idx - start_idx + 1
     
     if actual_points < expected_points:
-        print(f"⏳ Run {nome_run} in caricamento... ({actual_points}/{expected_points} ore)")
+        print(f"⏳ Run {nome_run} in caricamento... ({actual_points}/{expected_points} ore deterministiche)")
         return False, "", None
         
     if os.path.exists(FILE_LAST_HOUR):
@@ -84,16 +85,15 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
     return True, nome_run, dt_run_utc
 
 def fetch_dati_con_retry() -> dict:
-    # Aggiornato all'API deterministica
     URL = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": LATITUDE,
         "longitude": LONGITUDE,
         "hourly": "temperature_2m",
-        "models": "meteoswiss_icon_ch2", # Modello deterministico anziché ensemble_mean
+        "models": "meteoswiss_icon_ch2", 
         "timezone": "Europe/Rome",
         "past_days": 1,
-        "forecast_days": 6 
+        "forecast_days": 4 # Ridotto, il deterministico è più corto
     }
     for _ in range(3):
         try:
@@ -107,7 +107,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_22") # Mantiene lo stesso thread dell'originale
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_22") 
     
     if not token or not chat_id: return
     
@@ -154,37 +154,47 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     rome_tz = pytz.timezone("Europe/Rome")
     dt_run_local = dt_run_utc.astimezone(rome_tz)
     
+    print(f"Scaricando i dati HAIL_MAX (Deterministico) in modo sequenziale...")
+    hail_runs = []
+    
+    # Tentiamo fino a un massimo teorico, ma il try/except ci farà uscire non appena
+    # i dati del deterministico finiscono (es. a +48h o +33h)
+    for h in range(1, 121):
+        lead_time_str = f"P{h // 24}DT{h % 24}H"
+        req = ogd_api.Request(
+            collection="ogd-forecasting-icon-ch2",
+            variable="HAIL_MAX",
+            ref_time=dt_run_utc,
+            perturbed=False, 
+            lead_time=[lead_time_str],
+        )
+        try:
+            ds = ogd_api.get_from_ogd(req)
+            hail_runs.append(ds)
+        except Exception:
+            print(f"⚠️ Dati terminati a +{h-1}h nel bucket OGD. Costruisco le mappe con le ore disponibili.")
+            break
+            
+    if not hail_runs:
+        print("❌ Errore: Nessun dato trovato per HAIL_MAX nel run deterministico. Uscita.")
+        return
+
+    # Concateniamo tutti i dataset delle singole ore in un unico array temporale
+    hail_run = xr.concat(hail_runs, dim="lead_time")
+    
+    # Calcolo dinamico degli intervalli basato sulle ore REALI trovate
+    max_h = len(hail_runs)
     intervals = []
     last_h = 0
     
-    for h in range(1, 121):
+    for h in range(1, max_h + 1):
         dt_target = dt_run_local + timedelta(hours=h)
         if dt_target.hour == 0:
             intervals.append((last_h, h))
             last_h = h
             
-    if last_h < 120:
-        intervals.append((last_h, 120))
-
-    lead_times_needed = list(range(1, 121))
-    lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
-
-    req = ogd_api.Request(
-        collection="ogd-forecasting-icon-ch2",
-        variable="HAIL_MAX",
-        ref_time=dt_run_utc,
-        perturbed=False, # Modificato per scaricare la corsa deterministica
-        lead_time=lead_times_str,
-    )
-    
-    try:
-        print(f"Scaricando i dati HAIL_MAX per le 120 ore (Deterministico)...")
-        hail_data = ogd_api.get_from_ogd(req)
-        # Essendo il deterministico, non c'è la dimensione "eps", quindi omettiamo il .max(dim="eps")
-        hail_run = hail_data 
-    except Exception as e:
-        print(f"Errore nel download: {e}")
-        return
+    if last_h < max_h:
+        intervals.append((last_h, max_h))
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
@@ -209,9 +219,12 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     for h_start, h_end in intervals:
         hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
         
-        # Massimo temporale della grandine nell'intervallo
-        hail_interval = hail_run.sel(lead_time=hours_slice).max(dim="lead_time")
-
+        # In base a quante ore sono incluse nel set, filtriamo
+        valid_slice = [h for h in hours_slice if h in hail_run.lead_time.values]
+        if not valid_slice:
+            continue
+            
+        hail_interval = hail_run.sel(lead_time=valid_slice).max(dim="lead_time")
         hail_geo = regrid.iconremap(hail_interval, destination)
         hail_geo = hail_geo.where(hail_geo >= 0.5)
 
@@ -245,12 +258,14 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
         
         plt.close(chart.fig)
     
-    caption_album = f"🌩️ ICON-CH2: Rischio Grandine (Corsa Deterministica 24h)\nRun {nome_run}"
-    invia_album_telegram(percorsi_foto, caption_album)
-    
-    for f in percorsi_foto:
-        if os.path.exists(f): os.remove(f)
-    del hail_data, hail_run
+    if percorsi_foto:
+        caption_album = f"🌩️ ICON-CH2: Rischio Grandine (Corsa Deterministica, Copertura {max_h}h)\nRun {nome_run}"
+        invia_album_telegram(percorsi_foto, caption_album)
+        
+        for f in percorsi_foto:
+            if os.path.exists(f): os.remove(f)
+            
+    del hail_runs, hail_run
 
 def main():
     print("Cerco l'ultimo run completo ICON-CH2 via Open-Meteo per rischio grandine (Deterministico)...")
