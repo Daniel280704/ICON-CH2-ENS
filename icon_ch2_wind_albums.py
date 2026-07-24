@@ -202,10 +202,16 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala colori VMAX in km/h (14 livelli, 13 colori)
-    my_levels = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130]
-    my_colors = ["#ffffff", "#99d9ff", "#4da6ff", "#0066ff", "#00cc00", "#ffff00", "#ffcc00", 
-                 "#ff9900", "#ff6600", "#ff3300", "#cc0000", "#990000", "#660000"]
+    # Scala colori VMAX in km/h dettagliata (ogni 5 fino a 60, ogni 10 fino a 120, ogni 20 fino a 200)
+    # Totale: 23 livelli, 22 colori
+    my_levels = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70, 80, 90, 100, 110, 120, 140, 160, 180, 200]
+    my_colors = [
+        "#ffffff", "#d9f0ff", "#b3e0ff", "#8cd1ff", "#66c2ff", 
+        "#40b3ff", "#1aa3ff", "#008ce6", "#00cca3", "#00cc44", 
+        "#009933", "#ffff00", "#ffcc00", "#ff9900", "#ff6600", 
+        "#ff3300", "#e60000", "#b30000", "#800000", "#b300b3", 
+        "#800080", "#4d004d"
+    ]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
