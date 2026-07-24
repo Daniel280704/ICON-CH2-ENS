@@ -169,7 +169,7 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
 
     req = ogd_api.Request(
         collection="ogd-forecasting-icon-ch2",
-        variable="DHAIL_MX", # Nome variabile corretto per grandine max
+        variable="DHAIL_MX",
         ref_time=dt_run_utc,
         perturbed=True,
         lead_time=lead_times_str,
@@ -178,8 +178,8 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     try:
         print(f"Scaricando i dati DHAIL_MX per le 120 ore...")
         hail_data = ogd_api.get_from_ogd(req)
-        # SCENARIO PEGGIORE: prendiamo il massimo tra tutti i membri EPS
-        hail_worst_eps = hail_data.max(dim="eps")
+        # MEDIA DEGLI SCENARI al posto dello scenario peggiore
+        hail_mean_eps = hail_data.mean(dim="eps")
     except Exception as e:
         print(f"Errore nel download: {e}")
         return
@@ -188,9 +188,9 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Colori e livelli tipici per indicare la dimensione della grandine in cm
+    # L'ultimo colore ora è un viola molto scuro (#2d004d)
     my_levels = [0.5, 1, 2, 3, 4, 5, 7, 10, 15]
-    my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#ffffff"]
+    my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#2d004d"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
@@ -208,13 +208,13 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     for h_start, h_end in intervals:
         hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
         
-        # Troviamo la grandine massima raggiunta all'interno dell'intervallo temporale selezionato
-        hail_interval = hail_worst_eps.sel(lead_time=hours_slice).max(dim="lead_time")
+        # Estraiamo il picco massimo verificatosi in questa fascia oraria, basato sulla media degli scenari
+        hail_interval = hail_mean_eps.sel(lead_time=hours_slice).max(dim="lead_time")
 
         # Regrid a celle regolari per creare l'effetto "chiazza colorata"
         hail_geo = regrid.iconremap(hail_interval, destination)
         
-        # Filtriamo valori minuscoli o nulli (mostriamo solo celle >= 0.5 cm) per mantenere pulita la mappa
+        # Manteniamo la mappa pulita: via i valori < 0.5 cm
         hail_geo = hail_geo.where(hail_geo >= 0.5)
 
         chart = earthkit.plots.Map(domain=domain)
@@ -236,23 +236,23 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
         end_local = dt_run_local + timedelta(hours=h_end)
         
         str_valida = f"Dalle {start_local.strftime('%H:%M')} del {start_local.strftime('%d/%m')} alle {end_local.strftime('%H:%M')} del {end_local.strftime('%d/%m')}"
-        title = f"ICON-CH2 EPS - Grandine Massima Attesa (cm)\nSCENARIO PEGGIORE | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
+        title = f"ICON-CH2 EPS - Grandine Massima Attesa (cm)\nMEDIA DEGLI SCENARI | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
         
         chart.title(title)
         chart.legend(label="Grandine (cm)")
 
-        filename = f"hail_max_{h_start}_{h_end}.png"
+        filename = f"hail_mean_{h_start}_{h_end}.png"
         chart.save(filename)
         percorsi_foto.append(filename)
         
         plt.close(chart.fig)
     
-    caption_album = f"🌩️ ICON-CH2 EPS: Rischio Grandine (Scenario Peggiore 24h)\nRun {nome_run}"
+    caption_album = f"🌩️ ICON-CH2 EPS: Rischio Grandine (Media Scenari 24h)\nRun {nome_run}"
     invia_album_telegram(percorsi_foto, caption_album)
     
     for f in percorsi_foto:
         if os.path.exists(f): os.remove(f)
-    del hail_data, hail_worst_eps
+    del hail_data, hail_mean_eps
 
 def main():
     print("Cerco l'ultimo run completo ICON-CH2 via Open-Meteo per rischio grandine...")
@@ -264,7 +264,7 @@ def main():
     is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m", utc_offset)
     
     if is_new:
-        print(f"🚀 Lancio generazione Album Grandine giornalieri/spezzoni per il RUN {nome_run} ({dt_run_utc})")
+        print(f"🚀 Lancio generazione Album Grandine (Media) giornalieri/spezzoni per il RUN {nome_run} ({dt_run_utc})")
         genera_album_24h(dt_run_utc, nome_run)
     else:
         print("Nessun nuovo run completo trovato. Uscita.")
