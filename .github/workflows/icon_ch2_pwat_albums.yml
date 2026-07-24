@@ -1,4 +1,4 @@
-name: Generate ICON-CH2 PWAT Maps
+name: PWAT
 
 on:
   schedule:
@@ -36,7 +36,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # Mappatura secret del Thread 12
-          TELEGRAM_THREAD_ID_12: ${{ secrets.TELEGRAM_THREAD_ID_12 }}
+          TELEGRAM_THREAD_ID_41: ${{ secrets.TELEGRAM_THREAD_ID_41 }}
         run: |
           cp icon_ch2_pwat_albums.py opendata-nwp-demos/
           cp -r shapefiles opendata-nwp-demos/ || echo "No shapefiles"
