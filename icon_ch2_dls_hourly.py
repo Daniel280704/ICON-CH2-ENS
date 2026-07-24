@@ -5,6 +5,7 @@ import json
 import requests
 import urllib3
 import pytz
+import gc
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, timezone
@@ -144,20 +145,17 @@ def invia_album_telegram(file_paths: list, caption: str):
 
 def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
     blocchi = {}
-    for h in range(1, 121):
+    # Step di 3 ore (8 mappe al giorno)
+    for h in range(3, 121, 3):
         dt_target = dt_run_local + timedelta(hours=h)
-        date_str = dt_target.date().strftime("%Y-%m-%d")
-        hour = dt_target.hour
         
-        if hour == 0:
-            date_str = (dt_target.date() - timedelta(days=1)).strftime("%Y-%m-%d")
-            b_name = "18-24"
-        elif 1 <= hour <= 6: b_name = "00-06"
-        elif 7 <= hour <= 12: b_name = "06-12"
-        elif 13 <= hour <= 18: b_name = "12-18"
-        else: b_name = "18-24"
+        # Selezioniamo il giorno corretto (la mezzanotte chiude il giorno precedente)
+        if dt_target.hour == 0:
+            date_str = (dt_target.date() - timedelta(days=1)).strftime("%d/%m/%Y")
+        else:
+            date_str = dt_target.date().strftime("%d/%m/%Y")
             
-        key = f"{date_str} (Fascia {b_name})"
+        key = f"Data: {date_str}"
         if key not in blocchi:
             blocchi[key] = []
         blocchi[key].append(h)
@@ -186,7 +184,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
-    # Scarichiamo le costanti verticali del modello per ottenere l'altezza geometrica
     print("Scaricamento costanti verticali modello (HHL -> HFL)...")
     url_z = ogd_api.get_collection_asset_url(
         collection_id="ch.meteoschweiz.ogd-forecasting-icon-ch2",
@@ -199,7 +196,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     )
     HFL = destagger(ds_z["HHL"].squeeze(drop=True), "z")
 
-    # Impostiamo il target di interpolazione esattamente a 6000 m s.l.m.
     attrs_z = TargetCoordinatesAttrs(
         standard_name="height_above_mean_sea_level",
         long_name="height above the mean sea level",
@@ -213,36 +209,38 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     )
 
     for block_name, ore_list in blocchi.items():
-        print(f"\nGenerazione album DLS: {block_name}")
-        lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in ore_list]
-
-        # Richiediamo U e V senza specificare la pressione per ottenere tutti i livelli verticali del modello
-        req_u_upper = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
-        req_v_upper = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
-        
-        req_u_surf = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
-        req_v_surf = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
-        
-        try:
-            data_u_ml = ogd_api.get_from_ogd(req_u_upper).mean(dim="eps")
-            data_v_ml = ogd_api.get_from_ogd(req_v_upper).mean(dim="eps")
-            data_u_sfc = ogd_api.get_from_ogd(req_u_surf).mean(dim="eps")
-            data_v_sfc = ogd_api.get_from_ogd(req_v_surf).mean(dim="eps")
-            
-            # Interpolazione vettoriale a 6000 metri esatti
-            u_6km = interpolate_k2any(field=data_u_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
-            v_6km = interpolate_k2any(field=data_v_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
-
-        except Exception as e:
-            print(f"Salto il blocco {block_name} causa errore download/interpolazione: {e}")
-            continue
-
+        print(f"\nGenerazione album DLS per {block_name}")
         percorsi_foto = []
+
         for h in ore_list:
-            u_up = u_6km.sel(lead_time=np.timedelta64(h, 'h')).squeeze(drop=True)
-            v_up = v_6km.sel(lead_time=np.timedelta64(h, 'h')).squeeze(drop=True)
-            u_sfc = data_u_sfc["U_10M"].sel(lead_time=np.timedelta64(h, 'h'))
-            v_sfc = data_v_sfc["V_10M"].sel(lead_time=np.timedelta64(h, 'h'))
+            print(f"Scaricamento e calcolo media ensemble per l'ora +{h}...")
+            lead_time_str = [f"P{h // 24}DT{h % 24}H"]
+
+            # Ritorno a perturbed=True ma per una singola ora
+            req_u_up = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
+            req_v_up = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
+            req_u_sfc = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
+            req_v_sfc = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
+            
+            try:
+                # Applichiamo la media istantaneamente per svuotare la RAM
+                data_u_ml = ogd_api.get_from_ogd(req_u_up).mean(dim="eps")
+                data_v_ml = ogd_api.get_from_ogd(req_v_up).mean(dim="eps")
+                data_u_sfc = ogd_api.get_from_ogd(req_u_sfc).mean(dim="eps")
+                data_v_sfc = ogd_api.get_from_ogd(req_v_sfc).mean(dim="eps")
+                
+                # Interpolazione vettoriale a 6000 metri sulla media
+                u_6km = interpolate_k2any(field=data_u_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
+                v_6km = interpolate_k2any(field=data_v_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
+
+            except Exception as e:
+                print(f"Salto l'ora {h} causa errore: {e}")
+                continue
+
+            u_up = u_6km.squeeze(drop=True)
+            v_up = v_6km.squeeze(drop=True)
+            u_sfc = data_u_sfc["U_10M"].squeeze(drop=True)
+            v_sfc = data_v_sfc["V_10M"].squeeze(drop=True)
 
             u_up_geo = regrid.iconremap(u_up, destination)
             v_up_geo = regrid.iconremap(v_up, destination)
@@ -268,7 +266,8 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
             target_local = dt_run_local + timedelta(hours=h)
             str_valida = f"Valido per le: {target_local.strftime('%H:%M del %d/%m')}"
-            title = f"ICON-CH2 EPS - Deep Layer Shear SFC-6km (m/s)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
+            title = f"ICON-CH2 EPS - Deep Layer Shear SFC-6km (m/s)\nMEDIA SCENARI | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
+            
             chart.title(title)
             chart.legend(label="DLS (m/s)")
 
@@ -276,18 +275,21 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             chart.save(filename)
             percorsi_foto.append(filename)
             plt.close(chart.fig)
-        
-        caption_album = f"🌪️ DLS (SFC-6000m Geometrici)\n{block_name}\nRun {nome_run}"
-        invia_album_telegram(percorsi_foto, caption_album)
-        
-        for f in percorsi_foto:
-            if os.path.exists(f): os.remove(f)
             
-        del data_u_ml, data_v_ml, data_u_sfc, data_v_sfc, u_6km, v_6km
-        time.sleep(15)
+            # Pulizia manuale
+            del data_u_ml, data_v_ml, data_u_sfc, data_v_sfc, u_6km, v_6km, u_up, v_up, u_sfc, v_sfc, shear_geo
+            gc.collect()
+        
+        if percorsi_foto:
+            caption_album = f"🌪️ DLS Media EPS (SFC-6000m Geometrici)\n{block_name}\nRun {nome_run}"
+            invia_album_telegram(percorsi_foto, caption_album)
+            
+            for f in percorsi_foto:
+                if os.path.exists(f): os.remove(f)
+            time.sleep(15)
 
 def main():
-    print("Cerco l'ultimo run completo ICON-CH2 per DLS...")
+    print("Cerco l'ultimo run completo ICON-CH2 per DLS (Step 3h, Media Scenari)...")
     data = fetch_dati_con_retry()
     if not data: sys.exit(0)
         
