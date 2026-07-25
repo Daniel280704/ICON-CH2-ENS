@@ -50,8 +50,10 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str) -> tuple[bool, str, dat
     dt_end_local = rome_tz.localize(datetime.fromisoformat(ultima_ora_valida_str))
     dt_end_utc = dt_end_local.astimezone(timezone.utc)
     
+    # Troviamo l'innesco sapendo che ICON-CH2 dura 120 ore
     dt_run_utc = dt_end_utc - timedelta(hours=120)
     
+    # Cerchiamo l'indice di partenza del forecast (+1 ora di delay)
     dt_start_local = (dt_run_utc + timedelta(hours=1)).astimezone(rome_tz)
     start_time_str = dt_start_local.strftime("%Y-%m-%dT%H:%M")
     
@@ -214,7 +216,6 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
         print(f"\n📊 Generazione album WIND: {block_name}")
         lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in ore_list]
 
-        # Richiesta per le raffiche e per i vettori U e V
         req_vmax = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="VMAX_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
         req_u = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
         req_v = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
@@ -249,16 +250,15 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
             chart.grid_cells(vmax_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
 
             # --- Aggiunta delle Frecce della Direzione del Vento ---
-            # Imposta la densità delle frecce (es. un vettore ogni 15 punti griglia) per evitare un grafico illeggibile
             step_arrows = 15 
-            u_slice = u_geo.isel(lon=slice(None, None, step_arrows), lat=slice(None, None, step_arrows))
-            v_slice = v_geo.isel(lon=slice(None, None, step_arrows), lat=slice(None, None, step_arrows))
+            u_slice = u_geo.isel(x=slice(None, None, step_arrows), y=slice(None, None, step_arrows))
+            v_slice = v_geo.isel(x=slice(None, None, step_arrows), y=slice(None, None, step_arrows))
 
-            # Crea le coordinate 2D per il quiver di matplotlib
-            lon2d, lat2d = np.meshgrid(u_slice.lon, u_slice.lat)
+            # Crea le coordinate 2D
+            lon2d, lat2d = np.meshgrid(u_slice.x.values, u_slice.y.values)
             
-            # Disegna le frecce sovrapposte (Puoi modificare il parametro 'scale' per variare la lunghezza delle frecce)
-            chart.ax.quiver(lon2d, lat2d, u_slice.values, v_slice.values,
+            # Disegna le frecce sovrapposte
+            chart.ax.quiver(lon2d, lat2d, u_slice.values.squeeze(), v_slice.values.squeeze(),
                             transform=ccrs.PlateCarree(),
                             color='black', pivot='middle',
                             headwidth=4, headlength=5, headaxislength=3.5,
