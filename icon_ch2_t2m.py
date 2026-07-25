@@ -65,21 +65,26 @@ def genera(dt_utc, n_run):
             ch.grid_cells(var_geo, x="lon", y="lat", style=Style(colors="turbo", levels=my_levels))
             ch.ax.add_feature(f_reg); ch.ax.add_feature(f_prov) if f_prov else ch.borders()
             
+            # --- OVERLAY DENSO STILE METEOCIEL ---
             try:
-                lon_arr, lat_arr = var_geo.lon.values if hasattr(var_geo, 'lon') else var_geo.x.values, var_geo.lat.values if hasattr(var_geo, 'lat') else var_geo.y.values
-                val_arr, step = var_geo.values, 25
-                for i in range(10, val_arr.shape[0], step):
-                    for j in range(10, val_arr.shape[1], step):
+                coords_x = var_geo.coords['lon'].values if 'lon' in var_geo.coords else var_geo.coords['x'].values
+                coords_y = var_geo.coords['lat'].values if 'lat' in var_geo.coords else var_geo.coords['y'].values
+                val_arr = var_geo.values
+                is_2d = coords_x.ndim == 2
+                step = 5 # Altissima densità
+                for i in range(step//2, val_arr.shape[0], step):
+                    for j in range(step//2, val_arr.shape[1], step):
                         v = val_arr[i, j]
                         if not np.isnan(v):
-                            x_c = lon_arr[j] if val_arr.shape == (len(lat_arr), len(lon_arr)) else lon_arr[i]
-                            y_c = lat_arr[i] if val_arr.shape == (len(lat_arr), len(lon_arr)) else lat_arr[j]
-                            ch.ax.text(x_c, y_c, f"{v:.0f}", color='black', fontsize=6, ha='center', va='center', transform=ccrs.PlateCarree(), path_effects=[pe.withStroke(linewidth=1.2, foreground="white")])
-            except Exception: pass
+                            px = coords_x[i, j] if is_2d else coords_x[j]
+                            py = coords_y[i, j] if is_2d else coords_y[i]
+                            ch.ax.text(px, py, f"{v:.0f}", color='black', fontsize=6, fontweight='bold', ha='center', va='center', transform=ccrs.PlateCarree(), zorder=4)
+            except Exception as e:
+                print(f"Errore overlay numerico: {e}")
 
             for lon, lat, sigla in zip(lons, lats, sigle):
-                ch.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
-                ch.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree(), path_effects=[pe.withStroke(linewidth=1.5, foreground="white")])
+                ch.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree(), zorder=5)
+                ch.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree(), path_effects=[pe.withStroke(linewidth=1.5, foreground="white")], zorder=6)
 
             ch.title(f"ICON-CH2 EPS - T 2m (°C)\nRun: {dt_utc.strftime('%d/%m/%Y %H:%M UTC')} | Ore {(dt_loc + timedelta(hours=h)).strftime('%H:%M del %d/%m')}")
             ch.legend(label="Temperatura 2m (°C)")
