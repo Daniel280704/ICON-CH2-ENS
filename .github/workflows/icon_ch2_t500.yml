@@ -1,7 +1,7 @@
 name: T 500 hPa 3-oraria
 on:
   schedule:
-    - cron: '10 * * * *'
+    - cron: '10 */2 * * *'
   workflow_dispatch:
 jobs:
   plot_map:
