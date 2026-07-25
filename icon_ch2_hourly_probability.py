@@ -29,7 +29,6 @@ config.set("cache-policy", "temporary")
 
 LATITUDE = 45.07
 LONGITUDE = 7.54
-# File lock indipendente per non creare conflitti
 FILE_LAST_HOUR = "ultima_ora_icon_ch2_prob.txt" 
 RUN_DURATION = 120
 START_DELAY = 1
@@ -151,11 +150,27 @@ def invia_album_telegram(file_paths: list, caption: str):
 
 def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
     blocchi = {}
-    for h in range(1, 121):
-        dt_target = dt_run_local + timedelta(hours=h)
+    all_intervals = []
+    
+    # 0 - 36h: Risoluzione 1 ora
+    for h in range(1, 37):
+        all_intervals.append([h])
+        
+    # 36 - 72h: Risoluzione 3 ore
+    for h in range(39, 73, 3):
+        all_intervals.append([h-2, h-1, h])
+        
+    # 72 - 120h: Risoluzione 6 ore
+    for h in range(78, 121, 6):
+        all_intervals.append([h-5, h-4, h-3, h-2, h-1, h])
+        
+    for interval in all_intervals:
+        h_end = interval[-1]
+        dt_target = dt_run_local + timedelta(hours=h_end)
         date_str = dt_target.date().strftime("%Y-%m-%d")
         hour = dt_target.hour
         
+        # Gestione per posizionare l'album nella giusta fascia oraria del giorno
         if hour == 0:
             date_str = (dt_target.date() - timedelta(days=1)).strftime("%Y-%m-%d")
             b_name = "18-24"
@@ -167,7 +182,7 @@ def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
         key = f"{date_str} (Fascia {b_name})"
         if key not in blocchi:
             blocchi[key] = []
-        blocchi[key].append(h)
+        blocchi[key].append(interval)
         
     return blocchi
 
@@ -181,18 +196,10 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Livelli e colori uniformati allo script della grandine
     my_levels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     my_colors = [
-        "#a0e6ff", # 10-20%
-        "#00a0ff", # 20-30%
-        "#00ff00", # 30-40%
-        "#ffff00", # 40-50%
-        "#ffaa00", # 50-60%
-        "#ff0000", # 60-70%
-        "#cc0000", # 70-80%
-        "#ff00ff", # 80-90%
-        "#800080"  # 90-100%
+        "#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", 
+        "#ff0000", "#cc0000", "#ff00ff", "#800080"
     ]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
@@ -206,14 +213,18 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
-    for block_name, ore_list in blocchi.items():
+    for block_name, intervals_list in blocchi.items():
         print(f"\nGenerazione album probabilità: {block_name}")
         
-        lead_times_needed = list(ore_list)
-        if ore_list[0] > 1:
-            lead_times_needed.insert(0, ore_list[0] - 1)
-            
-        lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
+        # Identifichiamo tutte le ore necessarie per questo blocco specifico per non sovraccaricare l'API
+        lead_times_needed = set()
+        for interval in intervals_list:
+            for h in interval:
+                lead_times_needed.add(h)
+                if h > 1:
+                    lead_times_needed.add(h-1)
+                    
+        lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in sorted(list(lead_times_needed))]
 
         req = ogd_api.Request(
             collection="ogd-forecasting-icon-ch2",
@@ -231,19 +242,27 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
         percorsi_foto = []
         
-        for h in ore_list:
-            if h == 1:
-                prec_diff = tot_prec.sel(lead_time=np.timedelta64(h, 'h'))
-            else:
-                prec_diff = tot_prec.sel(lead_time=np.timedelta64(h, 'h')) - tot_prec.sel(lead_time=np.timedelta64(h-1, 'h'))
+        for interval in intervals_list:
+            prob_sum = None
+            
+            # Calcoliamo la probabilità oraria per ogni ora dell'intervallo e la sommiamo
+            for h in interval:
+                if h == 1:
+                    prec_diff = tot_prec.sel(lead_time=np.timedelta64(h, 'h'))
+                else:
+                    prec_diff = tot_prec.sel(lead_time=np.timedelta64(h, 'h')) - tot_prec.sel(lead_time=np.timedelta64(h-1, 'h'))
 
-            # Aggiunto .astype(float) per replicare esattamente la logica e rendere robusto il calcolo della media
-            prob_xr = (prec_diff >= 0.5).astype(float).mean(dim="eps") * 100
+                prob_h = (prec_diff >= 0.5).astype(float).mean(dim="eps") * 100
+                
+                if prob_sum is None:
+                    prob_sum = prob_h
+                else:
+                    prob_sum = prob_sum + prob_h
             
-            # Regrid sulla variabile di probabilità
+            # Calcolo della media delle probabilità nell'intervallo
+            prob_xr = prob_sum / len(interval)
+            
             prec_geo = regrid.iconremap(prob_xr, destination)
-            
-            # Filtro visivo: mostra solo probabilità >= 10% per uniformità con l'altro script
             prec_geo = prec_geo.where(prec_geo >= 10)
 
             chart = earthkit.plots.Map(domain=domain)
@@ -261,21 +280,29 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
                 chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
                 chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
 
-            start_local = dt_run_local + timedelta(hours=h-1)
-            end_local = dt_run_local + timedelta(hours=h)
+            start_local = dt_run_local + timedelta(hours=interval[0]-1)
+            end_local = dt_run_local + timedelta(hours=interval[-1])
             str_valida = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M del %d/%m')}"
 
-            title = f"ICON-CH2 EPS - Probabilità Pioggia >= 0.5 mm/h (%)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
+            # Adattiamo il titolo in base alla lunghezza dell'intervallo
+            if len(interval) == 1:
+                title = f"ICON-CH2 EPS - Probabilità Pioggia >= 0.5 mm/h (%)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
+            else:
+                title = f"ICON-CH2 EPS - Probabilità Media Pioggia >= 0.5 mm/h (%)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
+                
             chart.title(title)
             chart.legend(label="Probabilità (%)")
 
-            filename = f"oraria_{h}.png"
+            h_start_val = interval[0]
+            h_end_val = interval[-1]
+            filename = f"prob_{h_start_val}_{h_end_val}.png"
+            
             chart.save(filename)
             percorsi_foto.append(filename)
             
             plt.close(chart.fig)
         
-        caption_album = f"ICON-CH2 EPS: Probabilità Pioggia oraria >= 0.5 mm\n{block_name}\nRun {nome_run}"
+        caption_album = f"ICON-CH2 EPS: Probabilità Pioggia (>= 0.5 mm/h)\n{block_name}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
         
         for f in percorsi_foto:
@@ -293,7 +320,7 @@ def main():
     is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m", utc_offset)
     
     if is_new:
-        print(f"🚀 Lancio generazione Probabilità Orarie ICON-CH2 per il RUN {nome_run} ({dt_run_utc})")
+        print(f"🚀 Lancio generazione Probabilità Orarie/Medie ICON-CH2 per il RUN {nome_run} ({dt_run_utc})")
         genera_album_orari(dt_run_utc, nome_run)
     else:
         print("Nessun nuovo run completo trovato. Uscita.")
