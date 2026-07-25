@@ -251,9 +251,24 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
 
             # --- Aggiunta delle Frecce della Direzione del Vento ---
             step_arrows = 15 
+            
             u_slice = u_geo.isel(x=slice(None, None, step_arrows), y=slice(None, None, step_arrows))
             v_slice = v_geo.isel(x=slice(None, None, step_arrows), y=slice(None, None, step_arrows))
 
+            # Disegna le frecce sovrapposte
+            # Z-order a 999 forza le frecce in primissimo piano. 
+            # Senza 'scale', Matplotlib usa l'auto-dimensionamento.
+            chart.ax.quiver(
+                u_slice.x.values, 
+                u_slice.y.values, 
+                u_slice.values.squeeze(), 
+                v_slice.values.squeeze(),
+                transform=ccrs.PlateCarree(),
+                color='black', 
+                pivot='middle',
+                zorder=999
+            )
+            # -------------------------------------------------------
             # Crea le coordinate 2D
             lon2d, lat2d = np.meshgrid(u_slice.x.values, u_slice.y.values)
             
