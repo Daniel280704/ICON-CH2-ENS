@@ -2,7 +2,7 @@ name: Vorticity 500hPa
 
 on:
   schedule:
-    - cron: '35 * * * *'
+    - cron: '35 */2 * * *'
   workflow_dispatch:
 
 jobs:
