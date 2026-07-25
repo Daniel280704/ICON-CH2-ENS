@@ -7,6 +7,7 @@ import urllib3
 import pytz
 import gc
 import numpy as np
+import scipy.ndimage
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, timezone
 import warnings
@@ -166,6 +167,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
+    # Manteniamo la scala standard, perfetta per i dati filtrati
     my_levels = [-20, -15, -10, -5, -2, 2, 5, 10, 15, 20]
     my_colors = ["#0000a0", "#0044ff", "#44aaff", "#aaddff", "#ffffff", "#ffffff", "#ffcc00", "#ff6600", "#e60000", "#800080"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -180,7 +182,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
-    # Pre-calcolo delle distanze dx e dy (in metri) per la derivata sulla griglia re-grigliata
+    # Pre-calcolo delle distanze dx e dy (in metri)
     R_earth = 6371000.0
     lat_1d = np.linspace(ymin, ymax, ny)
     lon_1d = np.linspace(xmin, xmax, nx)
@@ -206,7 +208,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
                 data_u = ogd_api.get_from_ogd(req_u).mean(dim="eps")
                 data_v = ogd_api.get_from_ogd(req_v).mean(dim="eps")
                 
-                # Usiamo l'operatore nativo k2p (molto più leggero e veloce, non necessita di HHL/HFL)
                 u_500 = interpolate_k2p(field=data_u, mode="linear_in_p", p_field=data_p, p_tc_values=[500], p_tc_units="hPa")
                 v_500 = interpolate_k2p(field=data_v, mode="linear_in_p", p_field=data_p, p_tc_values=[500], p_tc_units="hPa")
 
@@ -218,20 +219,23 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             v_500_geo = regrid.iconremap(v_500.squeeze(drop=True), destination)
 
             # CALCOLO VORTICITÀ
-            # Estraiamo esplicitamente i valori NumPy (.values) per il gradiente 
             du_dy_idx, du_dx_idx = np.gradient(u_500_geo.values)
             dv_dy_idx, dv_dx_idx = np.gradient(v_500_geo.values)
 
             du_dy = du_dy_idx / dy_meters
             dv_dx = dv_dx_idx / dx_meters
 
-            vort_500_np = (dv_dx - du_dy) * 1e5
+            # Vorticità relativa grezza
+            vort_500_np_raw = (dv_dx - du_dy) * 1e5
 
-            # FIX: re-incapsuliamo i risultati nel DataArray xarray per restituire lon/lat a earthkit.plots
-            vort_500_xr = u_500_geo.copy(data=vort_500_np)
+            # FILTRO GAUSSIANO per ridurre il rumore del LAM
+            # sigma=3 applica un raggio di smoothing adeguato; aumentalo a 4 o 5 per renderlo ancora più "morbido"
+            vort_500_np_smoothed = scipy.ndimage.gaussian_filter(vort_500_np_raw, sigma=3)
+
+            # Re-incapsuliamo i risultati nel DataArray xarray
+            vort_500_xr = u_500_geo.copy(data=vort_500_np_smoothed)
 
             chart = earthkit.plots.Map(domain=domain)
-            # Passiamo l'oggetto xarray formattato correttamente
             chart.grid_cells(vort_500_xr, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
 
             chart.ax.add_feature(regions_feature)
@@ -246,7 +250,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
             target_local = dt_run_local + timedelta(hours=h)
             str_valida = f"Valido per le: {target_local.strftime('%H:%M del %d/%m')}"
-            title = f"ICON-CH2 EPS - Vorticità Relativa 500 hPa (10^-5 s^-1)\nMEDIA SCENARI | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
+            title = f"ICON-CH2 EPS - Vorticità Relativa 500 hPa (10^-5 s^-1)\nMEDIA SCENARI (Smoothed) | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
             
             chart.title(title)
             chart.legend(label="Vorticity (10^-5 s^-1)")
@@ -256,7 +260,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             percorsi_foto.append(filename)
             plt.close(chart.fig)
             
-            del data_p, data_u, data_v, u_500, v_500, u_500_geo, v_500_geo, vort_500_np, vort_500_xr
+            del data_p, data_u, data_v, u_500, v_500, u_500_geo, v_500_geo, vort_500_np_raw, vort_500_np_smoothed, vort_500_xr
             gc.collect()
         
         if percorsi_foto:
