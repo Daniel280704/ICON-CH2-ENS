@@ -192,8 +192,8 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Nuova scala ottimizzata per SDI_2 (dettagliata sui valori bassi a causa dell'effetto media)
-    my_levels = [0.1, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0]
+    # Ripristinata la scala forte per catturare i picchi dello Scenario Peggiore
+    my_levels = [0.5, 1, 1.5, 2, 3, 4, 6, 8, 12]
     my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#660066"]
 
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -214,13 +214,13 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
         for h_start, h_end in intervals:
             hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
 
-            # Applicata la Media dei Massimi: primo il max nelle 3 ore, poi la media tra scenari
-            sdi2_interval = sdi2_data.sel(lead_time=hours_slice).max(dim="lead_time").mean(dim="eps")
+            # SCENARIO PEGGIORE: Massimo nel tempo, e poi Massimo tra gli scenari
+            sdi2_interval = sdi2_data.sel(lead_time=hours_slice).max(dim="lead_time").max(dim="eps")
 
             sdi2_geo = regrid.iconremap(sdi2_interval, destination)
             
-            # Filtro abbassato a 0.1 per visualizzare segnali anche leggeri
-            sdi2_geo = sdi2_geo.where(sdi2_geo >= 0.1)
+            # Filtro base impostato su 0.5 per pulire la mappa 
+            sdi2_geo = sdi2_geo.where(sdi2_geo >= 0.5)
 
             chart = earthkit.plots.Map(domain=domain)
             chart.grid_cells(sdi2_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels, extend="max"))
@@ -241,18 +241,18 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
             end_local = dt_run_local + timedelta(hours=h_end)
 
             orario_str = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M')}"
-            title = f"ICON-CH2 EPS - SDI_2 (Supercell Detection Index)\nMEDIA DEI MASSIMI | {day_str} Fascia {orario_str}\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}"
+            title = f"ICON-CH2 EPS - SDI_2 (Supercell Detection Index)\nSCENARIO PEGGIORE | {day_str} Fascia {orario_str}\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}"
 
             chart.title(title)
             chart.legend(label="SDI_2")
 
-            filename = f"sdi2_mean_{h_start}_{h_end}.png"
+            filename = f"sdi2_max_{h_start}_{h_end}.png"
             chart.save(filename)
             percorsi_foto.append(filename)
 
             plt.close(chart.fig)
 
-        caption_album = f"ICON-CH2 EPS: Rischio Supercelle SDI_2 (Media dei Massimi)\nFasce triorarie del {day_str}\nRun {nome_run}"
+        caption_album = f"ICON-CH2 EPS: Rischio Supercelle SDI_2 (Scenario Peggiore)\nFasce triorarie del {day_str}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
 
         for f in percorsi_foto:
