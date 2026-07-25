@@ -47,9 +47,13 @@ def genera(dt_utc, n_run):
     f_reg = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
     f_prov = cfeature.ShapelyFeature(shpreader.Reader("shapefiles/ProvCM01012026_WGS84.shp").geometries(), ccrs.PlateCarree(), edgecolor='black', facecolor='none', linewidth=0.5, linestyle=':') if os.path.exists("shapefiles/ProvCM01012026_WGS84.shp") else None
 
-    # Quota neve: da bianco (quote basse) ad azzurro scuro/viola (quote alte)
-    my_levels = [0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000]
-    my_colors = ["#ffffff", "#e0f3f8", "#abd9e9", "#74add1", "#4575b4", "#313695", "#54278f", "#756bb1", "#9e9ac8", "#bcbddc"]
+    # Quota neve: step di 200m fino a 2000m (bianco -> blu), poi step di 500m fino a 4500m (blu scuro -> viola)
+    my_levels = [0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2500, 3000, 3500, 4000, 4500]
+    my_colors = [
+        "#ffffff", "#f7fbff", "#deebf7", "#c6dbef", "#9ecae1", 
+        "#6baed6", "#4292c6", "#2171b5", "#08519c", "#08306b", 
+        "#3f007d", "#54278f", "#6a51a3", "#807dba", "#9e9ac8"
+    ]
 
     for bn, ore in raggruppa(dt_loc).items():
         try: vm = ogd_api.get_from_ogd(ogd_api.Request("ogd-forecasting-icon-ch2", "SNOWLMT", dt_utc, True, [f"P{l//24}DT{l%24}H" for l in ore])).mean(dim="eps")
