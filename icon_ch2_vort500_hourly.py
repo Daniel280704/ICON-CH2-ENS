@@ -167,9 +167,24 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Manteniamo la scala standard, perfetta per i dati filtrati
-    my_levels = [-20, -15, -10, -5, -2, 2, 5, 10, 15, 20]
-    my_colors = ["#0000a0", "#0044ff", "#44aaff", "#aaddff", "#ffffff", "#ffffff", "#ffcc00", "#ff6600", "#e60000", "#800080"]
+    # --- SCALA ALLARGATA PER LA VORTICITÀ ---
+    # Passi piccoli al centro (-10, -5, 0, 5, 10) e passi ampi agli estremi (20, 40, 60) per assorbire i picchi
+    my_levels = [-60, -40, -20, -10, -5, 0, 5, 10, 20, 40, 60]
+    
+    # 10 colori abbinati ai 10 intervalli (i due centrali restano bianchi per neutralità attorno allo zero)
+    my_colors = [
+        "#000066", # da -60 a -40 (Anticiclonico molto forte)
+        "#0033cc", # da -40 a -20
+        "#4488ff", # da -20 a -10
+        "#aaddff", # da -10 a -5
+        "#ffffff", # da -5 a 0   (Neutro)
+        "#ffffff", # da 0 a 5    (Neutro)
+        "#ffcc00", # da 5 a 10
+        "#ff6600", # da 10 a 20
+        "#cc0000", # da 20 a 40
+        "#800080"  # da 40 a 60  (Ciclonico molto forte)
+    ]
+    
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
@@ -229,7 +244,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             vort_500_np_raw = (dv_dx - du_dy) * 1e5
 
             # FILTRO GAUSSIANO per ridurre il rumore del LAM
-            # sigma=3 applica un raggio di smoothing adeguato; aumentalo a 4 o 5 per renderlo ancora più "morbido"
             vort_500_np_smoothed = scipy.ndimage.gaussian_filter(vort_500_np_raw, sigma=3)
 
             # Re-incapsuliamo i risultati nel DataArray xarray
