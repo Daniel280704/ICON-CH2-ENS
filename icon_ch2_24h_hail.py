@@ -105,7 +105,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_22") # Mantiene il thread originale per la grandine[cite: 3]
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_22")
     
     if not token or not chat_id: return
     
@@ -172,24 +172,26 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
 
     req = ogd_api.Request(
         collection="ogd-forecasting-icon-ch2",
-        variable="HAIL_MAX", 
+        variable="DHAIL_MX", # Variabile ufficiale corretta per la grandine
         ref_time=dt_run_utc,
         perturbed=True,
         lead_time=lead_times_str,
     )
     
     try:
-        print(f"Scaricando i dati HAIL_MAX per le 120 ore...")
+        print(f"Scaricando i dati DHAIL_MX per le 120 ore...")
         hail_data = ogd_api.get_from_ogd(req)
+    except IndexError:
+        print("❌ Errore: Variabile non trovata nel catalogo o ore mancanti per DHAIL_MX.")
+        return
     except Exception as e:
-        print(f"Errore nel download: {e}")
+        print(f"❌ Errore nel download: {e}")
         return
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala dei colori invariata[cite: 3]
     my_levels = [0.5, 1, 2, 3, 4, 5, 7, 10, 15]
     my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#ffffff"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -210,7 +212,6 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
         for h_start, h_end in intervals:
             hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
             
-            # Applicata la media dei massimi per l'intervallo triorario
             hail_interval = hail_data.sel(lead_time=hours_slice).max(dim="lead_time").mean(dim="eps")
 
             hail_geo = regrid.iconremap(hail_interval, destination)
