@@ -2,7 +2,6 @@ import os
 import sys
 import time
 import json
-import glob
 import requests
 import urllib3
 import pytz
@@ -14,7 +13,6 @@ import warnings
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import cartopy.io.shapereader as shpreader
-from shapely.ops import unary_union
 
 import earthkit.plots
 from earthkit.plots.geo import bounds, domains
@@ -52,10 +50,8 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str) -> tuple[bool, str, dat
     dt_end_local = rome_tz.localize(datetime.fromisoformat(ultima_ora_valida_str))
     dt_end_utc = dt_end_local.astimezone(timezone.utc)
     
-    # Troviamo l'innesco sapendo che ICON-CH2 dura 120 ore
     dt_run_utc = dt_end_utc - timedelta(hours=120)
     
-    # Cerchiamo l'indice di partenza del forecast (+1 ora di delay)
     dt_start_local = (dt_run_utc + timedelta(hours=1)).astimezone(rome_tz)
     start_time_str = dt_start_local.strftime("%Y-%m-%dT%H:%M")
     
@@ -99,7 +95,7 @@ def fetch_dati_con_retry() -> dict:
         try:
             r = requests.get(URL, params=params, timeout=30)
             r.raise_for_status()
-            print(f"✅ Dati scaricati correttamente")
+            print(f"✅ Dati Open-Meteo scaricati correttamente")
             return r.json()
         except Exception as e:
             print(f"⚠️ Tentativo {attempt + 1}/3 fallito: {e}")
@@ -142,7 +138,6 @@ def invia_album_telegram(file_paths: list, caption: str):
     
     for idx, path in enumerate(file_paths):
         if not os.path.exists(path):
-            print(f"⚠️ File non trovato: {path}")
             continue
         media.append({
             "type": "photo",
@@ -152,7 +147,6 @@ def invia_album_telegram(file_paths: list, caption: str):
         files[f"photo_{idx}"] = open(path, "rb")
 
     if not files:
-        print("❌ Nessun file valido da inviare")
         return
 
     payload = {"chat_id": chat_id, "media": json.dumps(media)}
@@ -171,7 +165,6 @@ def invia_album_telegram(file_paths: list, caption: str):
 
 def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
     blocchi = {}
-    
     for h in range(1, 121):
         dt_target = dt_run_local + timedelta(hours=h)
         date_str = dt_target.date().strftime("%Y-%m-%d")
@@ -202,16 +195,9 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala colori VMAX in km/h dettagliata (ogni 5 fino a 60, ogni 10 fino a 120, ogni 20 fino a 200)
-    # Totale: 23 livelli, 22 colori
-    my_levels = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70, 80, 90, 100, 110, 120, 140, 160, 180, 200]
-    my_colors = [
-        "#ffffff", "#d9f0ff", "#b3e0ff", "#8cd1ff", "#66c2ff", 
-        "#40b3ff", "#1aa3ff", "#008ce6", "#00cca3", "#00cc44", 
-        "#009933", "#ffff00", "#ffcc00", "#ff9900", "#ff6600", 
-        "#ff3300", "#e60000", "#b30000", "#800000", "#b300b3", 
-        "#800080", "#4d004d"
-    ]
+    my_levels = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130]
+    my_colors = ["#ffffff", "#99d9ff", "#4da6ff", "#0066ff", "#00cc00", "#ffff00", "#ffcc00", 
+                 "#ff9900", "#ff6600", "#ff3300", "#cc0000", "#990000", "#660000"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
@@ -226,22 +212,22 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
 
     for block_name, ore_list in blocchi.items():
         print(f"\n📊 Generazione album WIND: {block_name}")
-        
         lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in ore_list]
 
-        # Richiesta unicamente per VMAX_10M
-        req_vmax = ogd_api.Request(
-            collection="ogd-forecasting-icon-ch2",
-            variable="VMAX_10M",
-            ref_time=dt_run_utc,
-            perturbed=True,
-            lead_time=lead_times_str,
-        )
+        # Richiesta per le raffiche e per i vettori U e V
+        req_vmax = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="VMAX_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        req_u = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        req_v = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
         
         try:
-            print(f"  ⬇️  Scarico dati vento (VMAX_10M) per {len(ore_list)} ore...")
+            print(f"  ⬇️  Scarico dati vento (VMAX, U, V) per {len(ore_list)} ore...")
             vmax_raw = ogd_api.get_from_ogd(req_vmax)
+            u_raw = ogd_api.get_from_ogd(req_u)
+            v_raw = ogd_api.get_from_ogd(req_v)
+
             vmax_mean = vmax_raw.mean(dim="eps")
+            u_mean = u_raw.mean(dim="eps")
+            v_mean = v_raw.mean(dim="eps")
             print(f"  ✅ Dati scaricati: {len(ore_list)} ore")
         except Exception as e:
             print(f"  ❌ Salto il blocco {block_name} causa errore: {e}")
@@ -251,24 +237,42 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
         
         for h in ore_list:
             vmax_step = vmax_mean.sel(lead_time=np.timedelta64(h, 'h'))
-            # Conversione da m/s a km/h
+            u_step = u_mean.sel(lead_time=np.timedelta64(h, 'h'))
+            v_step = v_mean.sel(lead_time=np.timedelta64(h, 'h'))
+
             vmax_step_kmh = vmax_step * 3.6 
             vmax_geo = regrid.iconremap(vmax_step_kmh, destination)
+            u_geo = regrid.iconremap(u_step, destination)
+            v_geo = regrid.iconremap(v_step, destination)
 
             chart = earthkit.plots.Map(domain=domain)
             chart.grid_cells(vmax_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
 
-            # Aggiunta Confini
+            # --- Aggiunta delle Frecce della Direzione del Vento ---
+            # Imposta la densità delle frecce (es. un vettore ogni 15 punti griglia) per evitare un grafico illeggibile
+            step_arrows = 15 
+            u_slice = u_geo.isel(lon=slice(None, None, step_arrows), lat=slice(None, None, step_arrows))
+            v_slice = v_geo.isel(lon=slice(None, None, step_arrows), lat=slice(None, None, step_arrows))
+
+            # Crea le coordinate 2D per il quiver di matplotlib
+            lon2d, lat2d = np.meshgrid(u_slice.lon, u_slice.lat)
+            
+            # Disegna le frecce sovrapposte (Puoi modificare il parametro 'scale' per variare la lunghezza delle frecce)
+            chart.ax.quiver(lon2d, lat2d, u_slice.values, v_slice.values,
+                            transform=ccrs.PlateCarree(),
+                            color='black', pivot='middle',
+                            headwidth=4, headlength=5, headaxislength=3.5,
+                            scale=300, zorder=10)
+            # -------------------------------------------------------
+
             chart.ax.add_feature(regions_feature)
             if prov_feature:
                 chart.ax.add_feature(prov_feature)
             else:
                 chart.borders()
 
-            # Aggiunta Pallino Rivoli
             chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree(), zorder=12)
 
-            # Aggiunta Capoluoghi con Sigle
             for lon, lat, sigla in zip(lons, lats, sigle):
                 chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree(), zorder=12)
                 chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree(), zorder=12)
@@ -277,7 +281,7 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
             end_local = dt_run_local + timedelta(hours=h)
             str_valida = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M del %d/%m')}"
 
-            chart.title(f"ICON-CH2 EPS - Raffiche Vento (km/h)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}")
+            chart.title(f"ICON-CH2 EPS - Raffiche Vento (km/h) & Direzione\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}")
             chart.legend(label="Raffiche Vento (km/h)")
             
             f_name = f"wind_{h}.png"
@@ -292,7 +296,7 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
             plt.close(chart.fig)
         
         if percorsi_foto:
-            caption_album = f"ICON-CH2 EPS: Raffiche Vento\n{block_name}\nRun {nome_run}"
+            caption_album = f"ICON-CH2 EPS: Raffiche e Direzione Vento\n{block_name}\nRun {nome_run}"
             invia_album_telegram(percorsi_foto, caption_album)
             
             for f in percorsi_foto:
@@ -302,7 +306,7 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
         else:
             print(f"  ⚠️  Nessuna mappa generata per {block_name}")
             
-        del vmax_raw, vmax_mean
+        del vmax_raw, vmax_mean, u_raw, v_raw, u_mean, v_mean
         print(f"  💤 Attendo 15 secondi prima del prossimo blocco...")
         time.sleep(15)
 
