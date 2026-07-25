@@ -1,0 +1,21 @@
+name: Quota Neve (SNOWLMT) orario
+on:
+  schedule:
+    - cron: '08 * * * *'
+  workflow_dispatch:
+jobs:
+  plot_map:
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libeccodes-tools libeccodes-dev
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git && cd opendata-nwp-demos && pip install poetry && poetry config virtualenvs.create false && poetry install --no-ansi
+      - env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_33: ${{ secrets.TELEGRAM_THREAD_ID_33 }}
+        run: cp icon_ch2_snowlmt.py opendata-nwp-demos/ && cp -r shapefiles opendata-nwp-demos/ || true && cp ultima_ora_icon_ch2_snowlmt.txt opendata-nwp-demos/ 2>/dev/null || true && cd opendata-nwp-demos && pip install pytz && python icon_ch2_snowlmt.py && cp ultima_ora_icon_ch2_snowlmt.txt ../
+      - run: git config --local user.email "action@github.com" && git config --local user.name "GitHub Action" && if [ -f "ultima_ora_icon_ch2_snowlmt.txt" ]; then git add "ultima_ora_icon_ch2_snowlmt.txt"; fi && if ! git diff --staged --quiet; then git commit -m "Aggiornamento SNOWLMT [skip ci]" && until git push; do sleep $((RANDOM%15+5)); git pull --rebase origin main; done; fi
