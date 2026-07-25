@@ -42,8 +42,9 @@ jobs:
           poetry add pytz
           poetry run python icon_ch2_w_700.py
           
-          cp ultima_ora_icon_ch2_w_700.txt ../
-
+          # Aggiunto '2>/dev/null || true' per evitare l'errore se il file non esiste
+          cp ultima_ora_icon_ch2_w_700.txt ../ 2>/dev/null || true
+          
       - name: Salva Lock ("Hash") nel Repository 
         run: |
           git config --local user.email "action@github.com"
