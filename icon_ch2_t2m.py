@@ -65,22 +65,24 @@ def genera(dt_utc, n_run):
             ch.grid_cells(var_geo, x="lon", y="lat", style=Style(colors="turbo", levels=my_levels))
             ch.ax.add_feature(f_reg); ch.ax.add_feature(f_prov) if f_prov else ch.borders()
             
-            # --- OVERLAY DENSO STILE METEOCIEL ---
+            # --- ISOTERME OGNI 2 GRADI ---
             try:
                 coords_x = var_geo.coords['lon'].values if 'lon' in var_geo.coords else var_geo.coords['x'].values
                 coords_y = var_geo.coords['lat'].values if 'lat' in var_geo.coords else var_geo.coords['y'].values
                 val_arr = var_geo.values
-                is_2d = coords_x.ndim == 2
-                step = 5 # Altissima densità
-                for i in range(step//2, val_arr.shape[0], step):
-                    for j in range(step//2, val_arr.shape[1], step):
-                        v = val_arr[i, j]
-                        if not np.isnan(v):
-                            px = coords_x[i, j] if is_2d else coords_x[j]
-                            py = coords_y[i, j] if is_2d else coords_y[i]
-                            ch.ax.text(px, py, f"{v:.0f}", color='black', fontsize=6, fontweight='bold', ha='center', va='center', transform=ccrs.PlateCarree(), zorder=4)
+                
+                if coords_x.ndim == 1:
+                    lon_grid, lat_grid = np.meshgrid(coords_x, coords_y)
+                else:
+                    lon_grid, lat_grid = coords_x, coords_y
+                    
+                contour_levels = np.arange(-50, 50, 2)
+                cs = ch.ax.contour(lon_grid, lat_grid, val_arr, levels=contour_levels, colors='black', linewidths=0.6, alpha=0.8, transform=ccrs.PlateCarree())
+                texts = ch.ax.clabel(cs, inline=True, fontsize=8, fmt='%1.0f')
+                for txt in texts:
+                    txt.set_path_effects([pe.withStroke(linewidth=1.5, foreground='white')])
             except Exception as e:
-                print(f"Errore overlay numerico: {e}")
+                print(f"Errore isoterme: {e}")
 
             for lon, lat, sigla in zip(lons, lats, sigle):
                 ch.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree(), zorder=5)
