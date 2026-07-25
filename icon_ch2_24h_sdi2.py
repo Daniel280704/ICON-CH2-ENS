@@ -29,7 +29,7 @@ config.set("cache-policy", "temporary")
 
 LATITUDE = 45.07
 LONGITUDE = 7.54
-FILE_LAST_HOUR = "ultima_ora_icon_ch2_uh_24h.txt"
+FILE_LAST_HOUR = "ultima_ora_icon_ch2_sdi2_24h.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
@@ -73,7 +73,7 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
         with open(FILE_LAST_HOUR, "r") as f:
             ultima_ora_salvata = f.read().strip()
         if ultima_ora_valida_str <= ultima_ora_salvata:
-            print(f"✅ Run ICON-CH2 {nome_run} già elaborato per UH_MAX (Ultimo blocco: {ultima_ora_valida_str}).")
+            print(f"✅ Run ICON-CH2 {nome_run} già elaborato per SDI_2 (Ultimo blocco: {ultima_ora_valida_str}).")
             return False, "", None
 
     with open(FILE_LAST_HOUR, "w") as f:
@@ -172,17 +172,17 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
 
     req = ogd_api.Request(
         collection="ogd-forecasting-icon-ch2",
-        variable="UH_MAX", # Variabile per Updraft Helicity (Rotazione Supercellulare)
+        variable="SDI_2",
         ref_time=dt_run_utc,
         perturbed=True,
         lead_time=lead_times_str,
     )
 
     try:
-        print(f"Scaricando i dati UH_MAX per le 120 ore...")
-        uh_data = ogd_api.get_from_ogd(req)
+        print(f"Scaricando i dati SDI_2 per le 120 ore...")
+        sdi2_data = ogd_api.get_from_ogd(req)
     except IndexError:
-        print("❌ Errore: Variabile non trovata o ore mancanti per UH_MAX.")
+        print("❌ Errore: Variabile non trovata o ore mancanti per SDI_2.")
         return
     except Exception as e:
         print(f"❌ Errore nel download: {e}")
@@ -192,8 +192,8 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Livelli tipici per l'Updraft Helicity (m^2/s^2)
-    my_levels = [25, 50, 75, 100, 150, 200, 300, 400]
+    # Ripristinata la scala forte per catturare i picchi dello Scenario Peggiore
+    my_levels = [0.5, 1, 1.5, 2, 3, 4, 6, 8, 12]
     my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#660066"]
 
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -214,16 +214,16 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
         for h_start, h_end in intervals:
             hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
 
-            # SCENARIO PEGGIORE: Massimo nel tempo, e poi Massimo tra gli scenari EPS
-            uh_interval = uh_data.sel(lead_time=hours_slice).max(dim="lead_time").max(dim="eps")
+            # SCENARIO PEGGIORE: Massimo nel tempo, e poi Massimo tra gli scenari
+            sdi2_interval = sdi2_data.sel(lead_time=hours_slice).max(dim="lead_time").max(dim="eps")
 
-            uh_geo = regrid.iconremap(uh_interval, destination)
+            sdi2_geo = regrid.iconremap(sdi2_interval, destination)
             
-            # Filtro base impostato su 25 per pulire la mappa e mostrare solo celle interessanti
-            uh_geo = uh_geo.where(uh_geo >= 25)
+            # Filtro base impostato su 0.5 per pulire la mappa 
+            sdi2_geo = sdi2_geo.where(sdi2_geo >= 0.5)
 
             chart = earthkit.plots.Map(domain=domain)
-            chart.grid_cells(uh_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels, extend="max"))
+            chart.grid_cells(sdi2_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels, extend="max"))
 
             chart.ax.add_feature(regions_feature)
             if prov_feature:
@@ -241,27 +241,27 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
             end_local = dt_run_local + timedelta(hours=h_end)
 
             orario_str = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M')}"
-            title = f"ICON-CH2 EPS - Updraft Helicity Max (m²/s²)\nSCENARIO PEGGIORE | {day_str} Fascia {orario_str}\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}"
+            title = f"ICON-CH2 EPS - SDI_2 (Supercell Detection Index)\nSCENARIO PEGGIORE | {day_str} Fascia {orario_str}\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}"
 
             chart.title(title)
-            chart.legend(label="UH (m²/s²)")
+            chart.legend(label="SDI_2")
 
-            filename = f"uh_max_{h_start}_{h_end}.png"
+            filename = f"sdi2_max_{h_start}_{h_end}.png"
             chart.save(filename)
             percorsi_foto.append(filename)
 
             plt.close(chart.fig)
 
-        caption_album = f"ICON-CH2 EPS: Rischio Supercelle UH_MAX (Scenario Peggiore)\nFasce triorarie del {day_str}\nRun {nome_run}"
+        caption_album = f"ICON-CH2 EPS: Rischio Supercelle SDI_2 (Scenario Peggiore)\nFasce triorarie del {day_str}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
 
         for f in percorsi_foto:
             if os.path.exists(f): os.remove(f)
 
-    del uh_data
+    del sdi2_data
 
 def main():
-    print("Cerco l'ultimo run completo ICON-CH2 via Open-Meteo per rischio supercelle (UH_MAX)...")
+    print("Cerco l'ultimo run completo ICON-CH2 via Open-Meteo per rischio supercelle (SDI_2)...")
     data = fetch_dati_con_retry()
     if not data: sys.exit(0)
 
@@ -270,7 +270,7 @@ def main():
     is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m", utc_offset)
 
     if is_new:
-        print(f"🚀 Lancio generazione Album UH_MAX giornalieri per il RUN {nome_run} ({dt_run_utc})")
+        print(f"🚀 Lancio generazione Album SDI_2 giornalieri per il RUN {nome_run} ({dt_run_utc})")
         genera_album_giornalieri(dt_run_utc, nome_run)
     else:
         print("Nessun nuovo run completo trovato. Uscita.")
