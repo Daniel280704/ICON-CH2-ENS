@@ -166,9 +166,19 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Colormap per il gradiente termico verticale (Lapse Rate in °C/km)
+    # --- NUOVA SCALA COLORI: DA VERDI A BLU/VIOLA ---
     my_levels = [4.0, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 9.0]
-    my_colors = ["#0000ff", "#00aaff", "#00ff00", "#ccff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#800080"]
+    my_colors = [
+        "#228b22", # 4.0 - 5.0: Verde scuro (Stabilità assoluta)
+        "#3cb371", # 5.0 - 5.5: Verde medio
+        "#a0e6a0", # 5.5 - 6.0: Verde chiaro (Transizione)
+        "#add8e6", # 6.0 - 6.5: Azzurrino (Instabilità debole)
+        "#44aaff", # 6.5 - 7.0: Azzurro (Instabilità moderata)
+        "#0000ff", # 7.0 - 7.5: Blu (Instabilità marcata)
+        "#000080", # 7.5 - 8.0: Blu scuro/Navy (Forte instabilità)
+        "#800080"  # 8.0 - 9.0: Viola (Instabilità estrema)
+    ]
+    
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
@@ -196,7 +206,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
                 data_p = ogd_api.get_from_ogd(req_p).mean(dim="eps")
                 data_t = ogd_api.get_from_ogd(req_t).mean(dim="eps")
                 
-                # Interpolazione logaritmica della temperatura alle quote bariche di interesse
                 t_500 = interpolate_k2p(field=data_t, mode="linear_in_lnp", p_field=data_p, p_tc_values=[500], p_tc_units="hPa")
                 t_700 = interpolate_k2p(field=data_t, mode="linear_in_lnp", p_field=data_p, p_tc_values=[700], p_tc_units="hPa")
 
@@ -207,15 +216,11 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             t_500_geo = regrid.iconremap(t_500.squeeze(drop=True), destination)
             t_700_geo = regrid.iconremap(t_700.squeeze(drop=True), destination)
 
-            # --- CALCOLO SPESSORE GEOMETRICO (Hydrostatic Equation) ---
-            # Costante derivata: R_d / g * ln(700/500) = (287.05 / 9.80665) * 0.3364722 = 9.8485
             t_mean = (t_500_geo.values + t_700_geo.values) / 2.0
             dz_meters = 9.8485 * t_mean
 
-            # --- CALCOLO LAPSE RATE (°C/km) ---
             lr_np = (t_700_geo.values - t_500_geo.values) / dz_meters * 1000.0
 
-            # Re-incapsuliamo i risultati nel DataArray xarray per restituire lon/lat a earthkit.plots
             lr_xr = t_500_geo.copy(data=lr_np)
 
             chart = earthkit.plots.Map(domain=domain)
@@ -225,7 +230,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             if prov_feature: chart.ax.add_feature(prov_feature)
             else: chart.borders()
 
-            # Marker casa/orto in Rivoli
             chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
 
             for lon, lat, sigla in zip(lons, lats, sigle):
