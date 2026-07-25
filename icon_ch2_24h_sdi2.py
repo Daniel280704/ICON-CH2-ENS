@@ -37,38 +37,38 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
     if not times or not mean_vals: return False, "", None
-    
+
     end_idx = -1
     for i in range(len(mean_vals) - 1, -1, -1):
         if mean_vals[i] is not None:
             end_idx = i
             break
-            
+
     if end_idx == -1: return False, "", None
-    
+
     ultima_ora_valida_str = times[end_idx]
-    
+
     dt_end_local = datetime.fromisoformat(ultima_ora_valida_str)
     dt_end_utc = dt_end_local - timedelta(seconds=utc_offset_sec)
     dt_run_utc_naive = dt_end_utc - timedelta(hours=RUN_DURATION)
     dt_start_utc = dt_run_utc_naive + timedelta(hours=START_DELAY)
-    
+
     dt_start_local = dt_start_utc + timedelta(seconds=utc_offset_sec)
     start_time_str = dt_start_local.strftime("%Y-%m-%dT%H:%M")
     nome_run = dt_run_utc_naive.strftime("%H") + "Z"
-    
+
     try:
         start_idx = times.index(start_time_str)
     except ValueError:
         return False, "", None
-        
+
     expected_points = RUN_DURATION - START_DELAY + 1
     actual_points = end_idx - start_idx + 1
-    
+
     if actual_points < expected_points:
         print(f"⏳ Run {nome_run} in caricamento... ({actual_points}/{expected_points} ore)")
         return False, "", None
-        
+
     if os.path.exists(FILE_LAST_HOUR):
         with open(FILE_LAST_HOUR, "r") as f:
             ultima_ora_salvata = f.read().strip()
@@ -106,16 +106,16 @@ def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     thread_id = os.getenv("TELEGRAM_THREAD_ID_31")
-    
+
     if not token or not chat_id: return
-    
+
     if len(file_paths) == 1:
         url = f"https://api.telegram.org/bot{token}/sendPhoto"
         payload = {"chat_id": chat_id, "caption": caption}
-        
+
         if thread_id:
             payload["message_thread_id"] = thread_id
-            
+
         try:
             with open(file_paths[0], "rb") as photo:
                 requests.post(url, data=payload, files={"photo": photo})
@@ -126,7 +126,7 @@ def invia_album_telegram(file_paths: list, caption: str):
     url = f"https://api.telegram.org/bot{token}/sendMediaGroup"
     media = []
     files = {}
-    
+
     for idx, path in enumerate(file_paths):
         media.append({
             "type": "photo",
@@ -148,21 +148,24 @@ def invia_album_telegram(file_paths: list, caption: str):
         for f in files.values():
             f.close()
 
-def genera_album_24h(dt_run_utc: datetime, nome_run: str):
+def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     rome_tz = pytz.timezone("Europe/Rome")
     dt_run_local = dt_run_utc.astimezone(rome_tz)
-    
-    intervals = []
+
+    intervals_by_day = {}
     last_h = 0
     
     for h in range(1, 121):
         dt_target = dt_run_local + timedelta(hours=h)
-        if dt_target.hour == 0:
-            intervals.append((last_h, h))
+        if dt_target.hour % 3 == 0 or h == 120:
+            if last_h < h:
+                dt_start_interval = dt_run_local + timedelta(hours=last_h)
+                day_str = dt_start_interval.strftime('%d/%m/%Y')
+                
+                if day_str not in intervals_by_day:
+                    intervals_by_day[day_str] = []
+                intervals_by_day[day_str].append((last_h, h))
             last_h = h
-            
-    if last_h < 120:
-        intervals.append((last_h, 120))
 
     lead_times_needed = list(range(1, 121))
     lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
@@ -174,25 +177,25 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
         perturbed=True,
         lead_time=lead_times_str,
     )
-    
+
     try:
         print(f"Scaricando i dati SDI_2 per le 120 ore...")
         sdi2_data = ogd_api.get_from_ogd(req)
-        # MEDIA DEGLI SCENARI
-        sdi2_mean_eps = sdi2_data.mean(dim="eps")
+    except IndexError:
+        print("❌ Errore: Variabile non trovata o ore mancanti per SDI_2.")
+        return
     except Exception as e:
-        print(f"Errore nel download: {e}")
+        print(f"❌ Errore nel download: {e}")
         return
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Definizione livelli e colori
-    my_levels = [0.5, 1, 1.5, 2, 3, 4, 6, 8, 12]
-    # Modificato: rimosso bianco ('#ffffff') alla fine, sostituito con viola scuro ('#660066')
+    # Nuova scala ottimizzata per SDI_2 (dettagliata sui valori bassi a causa dell'effetto media)
+    my_levels = [0.1, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0]
     my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#ff00ff", "#660066"]
-    
+
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
@@ -205,68 +208,70 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
-    percorsi_foto = []
-
-    for h_start, h_end in intervals:
-        hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
+    for day_str, intervals in intervals_by_day.items():
+        percorsi_foto = []
         
-        # Massimo raggiunto nell'intervallo temporale (sulla media degli scenari)
-        sdi2_interval = sdi2_mean_eps.sel(lead_time=hours_slice).max(dim="lead_time")
+        for h_start, h_end in intervals:
+            hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
 
-        sdi2_geo = regrid.iconremap(sdi2_interval, destination)
-        
-        sdi2_geo = sdi2_geo.where(sdi2_geo >= 0.5)
+            # Applicata la Media dei Massimi: primo il max nelle 3 ore, poi la media tra scenari
+            sdi2_interval = sdi2_data.sel(lead_time=hours_slice).max(dim="lead_time").mean(dim="eps")
 
-        chart = earthkit.plots.Map(domain=domain)
-        # Specifichiamo extend="max" per usare l'ultimo colore per valori sopra l'ultimo livello
-        chart.grid_cells(sdi2_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels, extend="max"))
+            sdi2_geo = regrid.iconremap(sdi2_interval, destination)
+            
+            # Filtro abbassato a 0.1 per visualizzare segnali anche leggeri
+            sdi2_geo = sdi2_geo.where(sdi2_geo >= 0.1)
 
-        chart.ax.add_feature(regions_feature)
-        if prov_feature:
-            chart.ax.add_feature(prov_feature)
-        else:
-            chart.borders()
+            chart = earthkit.plots.Map(domain=domain)
+            chart.grid_cells(sdi2_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels, extend="max"))
 
-        chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
+            chart.ax.add_feature(regions_feature)
+            if prov_feature:
+                chart.ax.add_feature(prov_feature)
+            else:
+                chart.borders()
 
-        for lon, lat, sigla in zip(lons, lats, sigle):
-            chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
-            chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
+            chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
 
-        start_local = dt_run_local + timedelta(hours=h_start)
-        end_local = dt_run_local + timedelta(hours=h_end)
-        
-        str_valida = f"Dalle {start_local.strftime('%H:%M')} del {start_local.strftime('%d/%m')} alle {end_local.strftime('%H:%M')} del {end_local.strftime('%d/%m')}"
-        title = f"ICON-CH2 EPS - Supercell Detection Index (SDI_2)\nMEDIA DEGLI SCENARI | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
-        
-        chart.title(title)
-        chart.legend(label="SDI_2")
+            for lon, lat, sigla in zip(lons, lats, sigle):
+                chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
+                chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
 
-        filename = f"sdi2_mean_{h_start}_{h_end}.png"
-        chart.save(filename)
-        percorsi_foto.append(filename)
-        
-        plt.close(chart.fig)
-    
-    caption_album = f"ICON-CH2 EPS: Rischio Supercelle (SDI_2 Media Scenari 24h)\nRun {nome_run}"
-    invia_album_telegram(percorsi_foto, caption_album)
-    
-    for f in percorsi_foto:
-        if os.path.exists(f): os.remove(f)
-    del sdi2_data, sdi2_mean_eps
+            start_local = dt_run_local + timedelta(hours=h_start)
+            end_local = dt_run_local + timedelta(hours=h_end)
+
+            orario_str = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M')}"
+            title = f"ICON-CH2 EPS - SDI_2 (Supercell Detection Index)\nMEDIA DEI MASSIMI | {day_str} Fascia {orario_str}\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}"
+
+            chart.title(title)
+            chart.legend(label="SDI_2")
+
+            filename = f"sdi2_mean_{h_start}_{h_end}.png"
+            chart.save(filename)
+            percorsi_foto.append(filename)
+
+            plt.close(chart.fig)
+
+        caption_album = f"ICON-CH2 EPS: Rischio Supercelle SDI_2 (Media dei Massimi)\nFasce triorarie del {day_str}\nRun {nome_run}"
+        invia_album_telegram(percorsi_foto, caption_album)
+
+        for f in percorsi_foto:
+            if os.path.exists(f): os.remove(f)
+
+    del sdi2_data
 
 def main():
     print("Cerco l'ultimo run completo ICON-CH2 via Open-Meteo per rischio supercelle (SDI_2)...")
     data = fetch_dati_con_retry()
     if not data: sys.exit(0)
-        
+
     hourly = data.get("hourly", {})
     utc_offset = data.get("utc_offset_seconds", 0)
     is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m", utc_offset)
-    
+
     if is_new:
-        print(f"🚀 Lancio generazione Album SDI_2 giornalieri/spezzoni per il RUN {nome_run} ({dt_run_utc})")
-        genera_album_24h(dt_run_utc, nome_run)
+        print(f"🚀 Lancio generazione Album SDI_2 giornalieri per il RUN {nome_run} ({dt_run_utc})")
+        genera_album_giornalieri(dt_run_utc, nome_run)
     else:
         print("Nessun nuovo run completo trovato. Uscita.")
 
