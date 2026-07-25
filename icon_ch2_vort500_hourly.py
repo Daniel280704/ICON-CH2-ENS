@@ -167,22 +167,24 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # --- SCALA ALLARGATA PER LA VORTICITÀ ---
-    # Passi piccoli al centro (-10, -5, 0, 5, 10) e passi ampi agli estremi (20, 40, 60) per assorbire i picchi
-    my_levels = [-60, -40, -20, -10, -5, 0, 5, 10, 20, 40, 60]
+    # --- SCALA OTTIMIZZATA PER LA VORTICITÀ ---
+    # Maggior dettaglio al centro (step di 5), scalini molto ampi agli estremi
+    my_levels = [-100, -50, -20, -15, -10, -5, 0, 5, 10, 15, 20, 50, 100]
     
-    # 10 colori abbinati ai 10 intervalli (i due centrali restano bianchi per neutralità attorno allo zero)
+    # 12 colori abbinati ai 12 intervalli
     my_colors = [
-        "#000066", # da -60 a -40 (Anticiclonico molto forte)
-        "#0033cc", # da -40 a -20
-        "#4488ff", # da -20 a -10
+        "#000044", # da -100 a -50 (Anticiclonico estremo)
+        "#0022cc", # da -50 a -20
+        "#0066ff", # da -20 a -15
+        "#44aaff", # da -15 a -10
         "#aaddff", # da -10 a -5
         "#ffffff", # da -5 a 0   (Neutro)
         "#ffffff", # da 0 a 5    (Neutro)
-        "#ffcc00", # da 5 a 10
-        "#ff6600", # da 10 a 20
-        "#cc0000", # da 20 a 40
-        "#800080"  # da 40 a 60  (Ciclonico molto forte)
+        "#ffff55", # da 5 a 10
+        "#ffcc00", # da 10 a 15
+        "#ff6600", # da 15 a 20
+        "#cc0000", # da 20 a 50
+        "#800080"  # da 50 a 100 (Ciclonico estremo)
     ]
     
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
