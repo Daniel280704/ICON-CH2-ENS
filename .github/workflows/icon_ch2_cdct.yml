@@ -2,7 +2,7 @@ name: Cloud Top / EQ Level (CDCT) orario
 
 on:
   schedule:
-    - cron: '28 * * * *'
+    - cron: '05 * * * *'
   workflow_dispatch:
 
 jobs:
