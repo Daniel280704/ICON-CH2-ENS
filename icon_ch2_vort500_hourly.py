@@ -36,6 +36,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_vort500.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -167,24 +177,11 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # --- SCALA OTTIMIZZATA PER LA VORTICITÀ ---
-    # Maggior dettaglio al centro (step di 5), scalini molto ampi agli estremi
     my_levels = [-100, -50, -20, -15, -10, -5, 0, 5, 10, 15, 20, 50, 100]
-    
-    # 12 colori abbinati ai 12 intervalli
     my_colors = [
-        "#000044", # da -100 a -50 (Anticiclonico estremo)
-        "#0022cc", # da -50 a -20
-        "#0066ff", # da -20 a -15
-        "#44aaff", # da -15 a -10
-        "#aaddff", # da -10 a -5
-        "#ffffff", # da -5 a 0   (Neutro)
-        "#ffffff", # da 0 a 5    (Neutro)
-        "#ffff55", # da 5 a 10
-        "#ffcc00", # da 10 a 15
-        "#ff6600", # da 15 a 20
-        "#cc0000", # da 20 a 50
-        "#800080"  # da 50 a 100 (Ciclonico estremo)
+        "#000044", "#0022cc", "#0066ff", "#44aaff", "#aaddff", 
+        "#ffffff", "#ffffff", "#ffff55", "#ffcc00", "#ff6600", 
+        "#cc0000", "#800080"
     ]
     
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -199,7 +196,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
-    # Pre-calcolo delle distanze dx e dy (in metri)
     R_earth = 6371000.0
     lat_1d = np.linspace(ymin, ymax, ny)
     lon_1d = np.linspace(xmin, xmax, nx)
@@ -213,7 +209,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         percorsi_foto = []
 
         for h in ore_list:
-            print(f"Scaricamento e calcolo vorticità ensemble per l'ora +{h}...")
             lead_time_str = [f"P{h // 24}DT{h % 24}H"]
 
             req_p = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="P", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
@@ -221,34 +216,30 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             req_v = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
             
             try:
-                data_p = ogd_api.get_from_ogd(req_p).mean(dim="eps")
-                data_u = ogd_api.get_from_ogd(req_u).mean(dim="eps")
-                data_v = ogd_api.get_from_ogd(req_v).mean(dim="eps")
+                print(f"  ⬇️  Scarico dati P, U, V per l'ora {h}...")
+                data_p = scarica_variabile_con_retry(req_p).mean(dim="eps")
+                data_u = scarica_variabile_con_retry(req_u).mean(dim="eps")
+                data_v = scarica_variabile_con_retry(req_v).mean(dim="eps")
+                print(f"  ✅ Dati scaricati: ora {h}")
                 
                 u_500 = interpolate_k2p(field=data_u, mode="linear_in_p", p_field=data_p, p_tc_values=[500], p_tc_units="hPa")
                 v_500 = interpolate_k2p(field=data_v, mode="linear_in_p", p_field=data_p, p_tc_values=[500], p_tc_units="hPa")
 
             except Exception as e:
-                print(f"Salto l'ora {h} causa errore: {e}")
+                print(f"  ❌ Salto l'ora {h} dopo 3 tentativi. Errore: {e}")
                 continue
 
             u_500_geo = regrid.iconremap(u_500.squeeze(drop=True), destination)
             v_500_geo = regrid.iconremap(v_500.squeeze(drop=True), destination)
 
-            # CALCOLO VORTICITÀ
             du_dy_idx, du_dx_idx = np.gradient(u_500_geo.values)
             dv_dy_idx, dv_dx_idx = np.gradient(v_500_geo.values)
 
             du_dy = du_dy_idx / dy_meters
             dv_dx = dv_dx_idx / dx_meters
 
-            # Vorticità relativa grezza
             vort_500_np_raw = (dv_dx - du_dy) * 1e5
-
-            # FILTRO GAUSSIANO per ridurre il rumore del LAM
             vort_500_np_smoothed = scipy.ndimage.gaussian_filter(vort_500_np_raw, sigma=3)
-
-            # Re-incapsuliamo i risultati nel DataArray xarray
             vort_500_xr = u_500_geo.copy(data=vort_500_np_smoothed)
 
             chart = earthkit.plots.Map(domain=domain)
