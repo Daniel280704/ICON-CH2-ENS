@@ -33,6 +33,16 @@ LATITUDE = 45.07
 LONGITUDE = 7.54
 FILE_LAST_HOUR = "ultima_ora_icon_ch2_cin_ml.txt"
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -52,10 +62,8 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str) -> tuple[bool, str, dat
     dt_end_local = rome_tz.localize(datetime.fromisoformat(ultima_ora_valida_str))
     dt_end_utc = dt_end_local.astimezone(timezone.utc)
     
-    # Troviamo l'innesco sapendo che ICON-CH2 dura 120 ore
     dt_run_utc = dt_end_utc - timedelta(hours=120)
     
-    # Cerchiamo l'indice di partenza del forecast (+1 ora di delay)
     dt_start_local = (dt_run_utc + timedelta(hours=1)).astimezone(rome_tz)
     start_time_str = dt_start_local.strftime("%Y-%m-%dT%H:%M")
     
@@ -111,7 +119,6 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    # Aggiornato per utilizzare il Thread ID 11
     thread_id = os.getenv("TELEGRAM_THREAD_ID_11")
     
     if not token or not chat_id:
@@ -203,7 +210,6 @@ def genera_album_cin_ml(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala colori CIN_ML adattata (inibizione): 10-1000 J/kg (16 livelli, 15 colori)
     my_levels = [10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000, 1500]
     my_colors = ["#e0f3f8", "#abd9e9", "#74add1", "#4575b4", "#313695", 
                  "#fee090", "#fdae61", "#f46d43", "#d73027", "#a50026", 
@@ -226,7 +232,6 @@ def genera_album_cin_ml(dt_run_utc: datetime, nome_run: str):
         
         lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in ore_list]
 
-        # Richiesta alla API per CIN_ML
         req = ogd_api.Request(
             collection="ogd-forecasting-icon-ch2",
             variable="CIN_ML",
@@ -237,11 +242,11 @@ def genera_album_cin_ml(dt_run_utc: datetime, nome_run: str):
         
         try:
             print(f"  ⬇️  Scarico dati CIN_ML per {len(ore_list)} ore...")
-            cin_raw = ogd_api.get_from_ogd(req)
+            cin_raw = scarica_variabile_con_retry(req)
             cin_mean = cin_raw.mean(dim="eps")
             print(f"  ✅ Dati scaricati: {len(ore_list)} ore")
         except Exception as e:
-            print(f"  ❌ Salto il blocco {block_name} causa errore: {e}")
+            print(f"  ❌ Salto il blocco {block_name} dopo 3 tentativi. Errore: {e}")
             continue
 
         percorsi_foto = []
