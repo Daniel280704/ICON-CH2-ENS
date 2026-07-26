@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_snow_depth_24h.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -155,18 +165,15 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     intervals = []
     last_h = 0
     
-    # Costruzione intervalli: intercetta le mezzanotti locali per dividere gli step
     for h in range(1, 121):
         dt_target = dt_run_local + timedelta(hours=h)
         if dt_target.hour == 0:
             intervals.append((last_h, h))
             last_h = h
             
-    # Se il run non finisce esattamente a mezzanotte, aggiungi l'ultimo moncone fino alla fine (h=120)
     if last_h < 120:
         intervals.append((last_h, 120))
 
-    # Prepara un set di tutte le scadenze necessarie
     lead_times_needed = set()
     for start, end in intervals:
         lead_times_needed.add(start)
@@ -175,7 +182,6 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     lead_times_needed = sorted(list(lead_times_needed))
     lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
 
-    # Variabile per lo spessore della neve (in metri, poi convertiremo in cm)
     req = ogd_api.Request(
         collection="ogd-forecasting-icon-ch2",
         variable="H_SNOW",
@@ -185,24 +191,23 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     )
     
     try:
-        print(f"Scaricando i dati H_SNOW per le ore: {lead_times_needed}")
-        tot_snow = ogd_api.get_from_ogd(req)
+        print(f"  ⬇️  Scarico dati H_SNOW per le ore: {lead_times_needed}...")
+        tot_snow = scarica_variabile_con_retry(req)
         snow_mean = tot_snow.mean(dim="eps")
+        print(f"  ✅ Dati scaricati con successo.")
     except Exception as e:
-        print(f"Errore nel download: {e}")
+        print(f"  ❌ Errore nel download dopo 3 tentativi: {e}")
         return
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala dei colori asimmetrica per evidenziare sia sciolgimento (rosso/arancio) che accumulo (blu/viola)
-    # Valori in cm
     my_levels = [-50, -25, -10, -5, -2, -1, 1, 2, 5, 10, 20, 30, 40, 50, 75, 100, 150]
     my_colors = [
-        "#990000", "#cc3300", "#ff6600", "#ff9933", "#ffcc99", "#ffe6cc",  # Scioglimento/Compattamento
-        "#ffffff",  # Nessuna variazione
-        "#e6f2ff", "#99ccff", "#3399ff", "#004cff", "#0000cc", "#6600cc", "#990099", "#cc0066", "#ff0066" # Accumulo
+        "#990000", "#cc3300", "#ff6600", "#ff9933", "#ffcc99", "#ffe6cc", 
+        "#ffffff", 
+        "#e6f2ff", "#99ccff", "#3399ff", "#004cff", "#0000cc", "#6600cc", "#990099", "#cc0066", "#ff0066"
     ]
     
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -220,9 +225,6 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     percorsi_foto = []
 
     for h_start, h_end in intervals:
-        
-        # H_SNOW è istantaneo, per calcolare la variazione sottraggo il valore all'inizio dell'intervallo dal valore alla fine.
-        # Moltiplichiamo per 100 per convertire da metri a centimetri.
         snow_start = snow_mean.sel(lead_time=np.timedelta64(h_start, 'h')) * 100
         snow_end = snow_mean.sel(lead_time=np.timedelta64(h_end, 'h')) * 100
         
