@@ -2,7 +2,7 @@ name: Probabilità Pioggia Oraria
 
 on:
   schedule:
-    - cron: '18 * * * *' 
+    - cron: '35 * * * *' 
   workflow_dispatch:
 
 jobs:
