@@ -28,40 +28,12 @@ urllib3.disable_warnings()
 config.set("cache-policy", "temporary")
 
 LOCK_FILE = "lock_kenda_ch1_accumuli.txt"
-
-def estrai_date_riferimento():
-    rome_tz = pytz.timezone("Europe/Rome")
-    now_local = datetime.now(rome_tz)
-    
-    # Mezzanotte di oggi
-    today_mid = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    # Giorno 1 (Ieri), Giorno 2 (L'altro ieri), Giorno 3 (3 giorni fa)
-    day1_mid = today_mid - timedelta(days=1)
-    day2_mid = today_mid - timedelta(days=2)
-    day3_mid = today_mid - timedelta(days=3)
-    
-    day1_str = day1_mid.strftime("%Y-%m-%d")
-    day2_str = day2_mid.strftime("%Y-%m-%d")
-    day3_str = day3_mid.strftime("%Y-%m-%d")
-    
-    if os.path.exists(LOCK_FILE):
-        with open(LOCK_FILE, "r") as f:
-            if f.read().strip() == day1_str:
-                print(f"✅ Accumuli per il {day1_str} già elaborati. Esco.")
-                return False, None, None, None, None
-
-    # Vettore temporale per scaricare le 24 ore di "Ieri" (Day 1)
-    start_utc = day1_mid.astimezone(timezone.utc)
-    ref_times_day1 = [start_utc + timedelta(hours=i) for i in range(24)]
-    
-    return True, day1_str, day2_str, day3_str, ref_times_day1
+ARCHIVE_DIR = "kenda_archive"
 
 def invia_telegram(file_path: str, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     thread_id = os.getenv("TELEGRAM_THREAD_ID_19080")
-    
     if not token or not chat_id: return
     
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
@@ -113,94 +85,147 @@ def genera_e_invia_mappa(da_prec, titolo, filename, levels, colors):
     chart.save(filename)
     plt.close(chart.fig)
     
-    caption_album = f"KENDA-CH1 Analisi: Precipitazioni\n{titolo}"
+    caption_album = f"KENDA-CH1 Analisi\n{titolo}"
     invia_telegram(filename, caption_album)
     if os.path.exists(filename): os.remove(filename)
 
 def main():
-    is_new, day1_str, day2_str, day3_str, ref_times_day1 = estrai_date_riferimento()
-    if not is_new:
-        sys.exit(0)
-        
-    print(f"🚀 Download 24h per la giornata di ieri ({day1_str})...")
+    rome_tz = pytz.timezone("Europe/Rome")
+    today_str = datetime.now(rome_tz).strftime("%Y-%m-%d")
     
-    # 1. SCARICA IERI E SALVA MATRICE
-    prec_day1_da = None
-    for ref_time in ref_times_day1:
-        req = ogd_api.Request(
-            collection="ogd-analysis-kenda-ch1",
-            variable="TOT_PREC",
-            ref_time=ref_time,
-            perturbed=False,
-            lead_time="P0DT1H",
-        )
-        try:
-            da = ogd_api.get_from_ogd(req)
-            if getattr(da, "size", 0) == 0:
-                print(f"  ⚠️ Dato mancante per le {ref_time.strftime('%H:%M')} UTC. Riproverò al prossimo cron.")
+    # 1. CONTROLLO LOCK (Gira solo una volta al giorno)
+    if os.path.exists(LOCK_FILE):
+        with open(LOCK_FILE, "r") as f:
+            if f.read().strip() == today_str:
+                print("✅ Mappe già inviate per oggi. Esco.")
                 sys.exit(0)
 
-            if prec_day1_da is None:
-                prec_day1_da = da.copy(deep=True)
-            else:
-                prec_day1_da.values += da.values
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    
+    # 2. DEFINISCI L'ULTIMA ORA DISPONIBILE (ora UTC - 3 ore di latenza server)
+    now_utc = datetime.now(timezone.utc)
+    latest_ref_time = now_utc.replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
+    
+    # 3. LEGGI ARCHIVIO LOCALE
+    existing_files = glob.glob(os.path.join(ARCHIVE_DIR, "kenda_prec_*.npy"))
+    existing_times = []
+    for f in existing_files:
+        basename = os.path.basename(f)
+        time_str = basename.replace("kenda_prec_", "").replace(".npy", "")
+        dt = datetime.strptime(time_str, "%Y%m%d_%H%M").replace(tzinfo=timezone.utc)
+        existing_times.append(dt)
+        
+    # 4. CALCOLA ORE MANCANTI
+    times_to_download = []
+    if not existing_times:
+        # Primo avvio in assoluto: prendi ultime 24 ore
+        times_to_download = [latest_ref_time - timedelta(hours=i) for i in range(24)]
+    else:
+        last_saved_time = max(existing_times)
+        curr = last_saved_time + timedelta(hours=1)
+        while curr <= latest_ref_time:
+            times_to_download.append(curr)
+            curr += timedelta(hours=1)
+            
+        if len(times_to_download) > 24:
+            print("⚠️ Gap maggiore di 24 ore! Recupero solo le ultime 24 disponibili su MeteoSvizzera.")
+            times_to_download = [latest_ref_time - timedelta(hours=i) for i in range(24)]
+            
+    times_to_download.sort()
+
+    # 5. ESTRAI TEMPLATE XARRAY PER IL REGRID (Serve una base dati intatta)
+    template_da = None
+    try:
+        req = ogd_api.Request(collection="ogd-analysis-kenda-ch1", variable="TOT_PREC", ref_time=latest_ref_time, perturbed=False, lead_time="P0DT1H")
+        template_da = ogd_api.get_from_ogd(req)
+    except Exception as e:
+        print(f"❌ Impossibile ottenere il template xarray: {e}. Riprovo al prossimo cron.")
+        sys.exit(0)
+
+    # 6. DOWNLOAD E SALVATAGGIO ORE SINGOLE
+    for ref_time in times_to_download:
+        req = ogd_api.Request(
+            collection="ogd-analysis-kenda-ch1", variable="TOT_PREC", ref_time=ref_time, perturbed=False, lead_time="P0DT1H"
+        )
+        try:
+            print(f"  ⬇️  Scarico ora mancante: {ref_time.strftime('%Y-%m-%d %H:%M')} UTC...")
+            da = ogd_api.get_from_ogd(req)
+            if getattr(da, "size", 0) == 0: continue
+            
+            # Salva la singola ora nell'archivio come matrice numpy pura
+            file_name = f"kenda_prec_{ref_time.strftime('%Y%m%d_%H%M')}.npy"
+            np.save(os.path.join(ARCHIVE_DIR, file_name), da.values)
+            if ref_time not in existing_times:
+                existing_times.append(ref_time)
         except Exception as e:
-            print(f"  ❌ Errore download {ref_time.strftime('%H:%M')} UTC: {e}. Riproverò al prossimo cron.")
-            sys.exit(0)
+            print(f"  ❌ Errore download {ref_time.strftime('%H:%M')} UTC: {e}")
 
-    # Salviamo la matrice di ieri usando numpy
-    np.save(f"kenda_matrix_{day1_str}.npy", prec_day1_da.values)
+    if not existing_times:
+        sys.exit(0)
 
-    # 2. IMPOSTAZIONE SCALE COLORI
-    levels_24h = [0.1, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 110, 130, 150, 250, 350, 500]
+    # 7. FUNZIONE DINAMICA DI ACCUMULO (Prende le ultime X ore disponibili)
+    sorted_times = sorted(existing_times, reverse=True)
+    
+    def crea_accumulo(ore_richieste):
+        target_times = sorted_times[:ore_richieste]
+        if len(target_times) == 0: return None, None, None, 0
+        
+        # Azzera il template e inizia a sommare i file
+        accumulo_da = template_da.copy(deep=True)
+        accumulo_da.values = np.zeros_like(accumulo_da.values)
+        
+        ore_effettive = 0
+        for t in target_times:
+            file_path = os.path.join(ARCHIVE_DIR, f"kenda_prec_{t.strftime('%Y%m%d_%H%M')}.npy")
+            if os.path.exists(file_path):
+                accumulo_da.values += np.load(file_path)
+                ore_effettive += 1
+                
+        # Calcola la stringa temporale effettiva
+        start_t_local = min(target_times).astimezone(rome_tz)
+        end_t_local = (max(target_times) + timedelta(hours=1)).astimezone(rome_tz)
+        return accumulo_da, start_t_local, end_t_local, ore_effettive
+
+    # SCALE COLORI
+    levels_24h = [0.1, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 110, 130, 150, 250, 350, 400]
     colors_24h = [
         "#00d4ff", "#0080ff", "#0000ff", "#ccffcc", "#99ff99", "#66ff66", "#33ff33", "#00ff00", 
         "#00e600", "#00cc00", "#009900", "#ffff00", "#ffcc00", "#ff9900", "#ff6600", "#ff3300", 
         "#ff0000", "#cc0000", "#990000", "#ffccff", "#ff99ff", "#cc66ff", "#9933ff", "#6600cc", 
         "#4d0099", "#800080", "#ffffff", "#cccccc", "#808080", "#333333"
     ]
-    
-    levels_48h = levels_24h[:-1] + [350, 400, 500]
+    levels_48h = [0.1, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 110, 130, 150, 250, 350, 400, 500]
     colors_48h = colors_24h + ["#1a1a1a"]
-    
-    levels_72h = levels_24h[:-1] + [350, 400, 500, 600, 700]
-    colors_72h = colors_24h + ["#1a1a1a", "#000000", "#3b170b"]
+    levels_72h = [0.1, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 110, 130, 150, 250, 350, 400, 500, 700]
+    colors_72h = colors_48h + ["#000000"]
 
-    # 3. GENERA MAPPA 24H
-    titolo_24h = f"Accumulo 24h: {day1_str}"
-    genera_e_invia_mappa(prec_day1_da, titolo_24h, "kenda_24h.png", levels_24h, colors_24h)
+    # --- PLOT MAPPE ---
+    da_24, start_24, end_24, ore_24 = crea_accumulo(24)
+    if da_24 is not None:
+        titolo = f"Ultime 24 Ore esatte disponibili\nDalle {start_24.strftime('%H:%M del %d/%m')} alle {end_24.strftime('%H:%M del %d/%m')}\n(Ore processate: {ore_24}/24)"
+        genera_e_invia_mappa(da_24, titolo, "kenda_24h.png", levels_24h, colors_24h)
 
-    # 4. CALCOLA E GENERA 48H (se esiste l'altro ieri)
-    file_day2 = f"kenda_matrix_{day2_str}.npy"
-    if os.path.exists(file_day2):
-        print(f"🔄 Trovato storico 48h ({day2_str}), genero mappa...")
-        matrice_day2 = np.load(file_day2)
-        prec_48h_da = prec_day1_da.copy(deep=True)
-        prec_48h_da.values += matrice_day2
-        
-        titolo_48h = f"Accumulo 48h: dal {day2_str} al {day1_str}"
-        genera_e_invia_mappa(prec_48h_da, titolo_48h, "kenda_48h.png", levels_48h, colors_48h)
+    da_48, start_48, end_48, ore_48 = crea_accumulo(48)
+    if da_48 is not None and ore_48 > 24:
+        titolo = f"Ultime 48 Ore esatte disponibili\nDalle {start_48.strftime('%H:%M del %d/%m')} alle {end_48.strftime('%H:%M del %d/%m')}\n(Ore processate: {ore_48}/48)"
+        genera_e_invia_mappa(da_48, titolo, "kenda_48h.png", levels_48h, colors_48h)
 
-        # 5. CALCOLA E GENERA 72H (se esiste 3 giorni fa)
-        file_day3 = f"kenda_matrix_{day3_str}.npy"
-        if os.path.exists(file_day3):
-            print(f"🔄 Trovato storico 72h ({day3_str}), genero mappa...")
-            matrice_day3 = np.load(file_day3)
-            prec_72h_da = prec_48h_da.copy(deep=True)
-            prec_72h_da.values += matrice_day3
-            
-            titolo_72h = f"Accumulo 72h: dal {day3_str} al {day1_str}"
-            genera_e_invia_mappa(prec_72h_da, titolo_72h, "kenda_72h.png", levels_72h, colors_72h)
+    da_72, start_72, end_72, ore_72 = crea_accumulo(72)
+    if da_72 is not None and ore_72 > 48:
+        titolo = f"Ultime 72 Ore esatte disponibili\nDalle {start_72.strftime('%H:%M del %d/%m')} alle {end_72.strftime('%H:%M del %d/%m')}\n(Ore processate: {ore_72}/72)"
+        genera_e_invia_mappa(da_72, titolo, "kenda_72h.png", levels_72h, colors_72h)
 
-    # Scrive il Lock File
+    # 8. SCRIVI LOCK
     with open(LOCK_FILE, "w") as f:
-        f.write(day1_str)
+        f.write(today_str)
         
-    # Pulizia vecchie matrici (tiene solo le ultime 3 per sicurezza)
-    for f in glob.glob("kenda_matrix_*.npy"):
-        if f not in [f"kenda_matrix_{day1_str}.npy", file_day2, file_day3]:
+    # 9. PULIZIA REPOSITORY (tiene solo le ultime 80 ore per non superare limiti Github)
+    all_files = glob.glob(os.path.join(ARCHIVE_DIR, "kenda_prec_*.npy"))
+    if len(all_files) > 80:
+        all_files.sort() # I più vecchi all'inizio
+        for f in all_files[:-80]:
             os.remove(f)
-            print(f"🧹 Pulizia vecchio file storico: {f}")
+            print(f"🧹 Pulizia vecchio file: {f}")
 
     print("✅ Elaborazione completa conclusa.")
 
