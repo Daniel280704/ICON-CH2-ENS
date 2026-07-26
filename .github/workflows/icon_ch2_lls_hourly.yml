@@ -27,9 +27,21 @@ jobs:
 
       - name: Setup Ecosistema MeteoSwiss
         run: |
+          # 1. Aumento il timeout di rete per evitare i ReadTimeoutError di PyPI
+          export PIP_DEFAULT_TIMEOUT=120
+          export POETRY_REQUESTS_TIMEOUT=120
+          
+          # 2. Fix preventivo per pip e attrs (come per l'altro workflow)
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade --force-reinstall attrs
+          
+          # 3. Setup standard
           git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git
           cd opendata-nwp-demos
           pip install poetry
+          
+          # 4. Pulisco la cache e installo disabilitando gli ambienti virtuali
+          poetry cache clear --all pypi || true
           poetry config virtualenvs.create false
           poetry install --no-ansi
 
