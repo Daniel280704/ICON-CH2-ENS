@@ -2,7 +2,7 @@ name: Precipitazioni 24h
 
 on:
   schedule:
-    - cron: '13 * * * *'
+    - cron: '05 * * * *'
   workflow_dispatch:
 
 jobs:
