@@ -2,7 +2,7 @@ name: CIN_MU
 
 on:
   schedule:
-    - cron: '13 * * * *'
+    - cron: '15 * * * *'
   workflow_dispatch:
 
 jobs:
