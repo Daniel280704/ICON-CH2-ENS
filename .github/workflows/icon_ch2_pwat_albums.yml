@@ -2,7 +2,7 @@ name: PWAT
 
 on:
   schedule:
-    - cron: '13 * * * *'
+    - cron: '45 * * * *'
   workflow_dispatch:
 
 jobs:
