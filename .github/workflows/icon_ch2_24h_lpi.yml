@@ -2,7 +2,7 @@ name: LPI Max 3h
 
 on:
   schedule:
-    - cron: '23 * * * *' # Sfalsato di 5 minuti rispetto alla grandine per bilanciare i runner
+    - cron: '05 * * * *' # Sfalsato di 5 minuti rispetto alla grandine per bilanciare i runner
   workflow_dispatch:
 
 jobs:
