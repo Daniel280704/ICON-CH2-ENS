@@ -1,7 +1,7 @@
 name: Sunshine Duration (DURSUN) orario
 on:
   schedule:
-    - cron: '25 * * * *'
+    - cron: '27 * * * *'
   workflow_dispatch:
 jobs:
   plot_map:
