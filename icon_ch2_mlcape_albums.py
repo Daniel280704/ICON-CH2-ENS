@@ -33,6 +33,16 @@ LATITUDE = 45.07
 LONGITUDE = 7.54
 FILE_LAST_HOUR = "ultima_ora_icon_ch2_mlcape.txt"
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -52,10 +62,8 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str) -> tuple[bool, str, dat
     dt_end_local = rome_tz.localize(datetime.fromisoformat(ultima_ora_valida_str))
     dt_end_utc = dt_end_local.astimezone(timezone.utc)
     
-    # Troviamo l'innesco sapendo che ICON-CH2 dura 120 ore
     dt_run_utc = dt_end_utc - timedelta(hours=120)
     
-    # Cerchiamo l'indice di partenza del forecast (+1 ora di delay)
     dt_start_local = (dt_run_utc + timedelta(hours=1)).astimezone(rome_tz)
     start_time_str = dt_start_local.strftime("%Y-%m-%dT%H:%M")
     
@@ -202,7 +210,6 @@ def genera_album_mlcape(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala colori MLCAPE dettagliata: 200-5000 J/kg
     my_levels = [200, 300, 400, 500, 750, 1000, 1250, 1500, 1750, 2000, 2500, 3000, 3500, 4000, 4500, 5000]
     my_colors = ["#4575b4", "#74add1", "#abd9e9", "#e0f3f8", "#ffffbf", "#fee090", "#fdae61", "#f46d43", 
                  "#d73027", "#c7192b", "#b30000", "#8b0000", "#660000", "#440000", "#220000"]
@@ -233,11 +240,11 @@ def genera_album_mlcape(dt_run_utc: datetime, nome_run: str):
         
         try:
             print(f"  ⬇️  Scarico dati CAPE_ML per {len(ore_list)} ore...")
-            mlcape_raw = ogd_api.get_from_ogd(req)
+            mlcape_raw = scarica_variabile_con_retry(req)
             mlcape_mean = mlcape_raw.mean(dim="eps")
             print(f"  ✅ Dati scaricati: {len(ore_list)} ore")
         except Exception as e:
-            print(f"  ❌ Salto il blocco {block_name} causa errore: {e}")
+            print(f"  ❌ Salto il blocco {block_name} dopo 3 tentativi. Errore: {e}")
             continue
 
         percorsi_foto = []
