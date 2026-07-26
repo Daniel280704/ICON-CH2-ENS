@@ -22,6 +22,7 @@ from earthkit.data import config
 
 from meteodatalab import ogd_api
 from meteodatalab.operators import regrid
+from meteodatalab.operators.destagger import destagger  # <--- AGGIUNTO IMPORT
 from meteodatalab.operators.vertical_interpolation import interpolate_k2p
 from rasterio.crs import CRS
 
@@ -210,8 +211,13 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
                 data_w = scarica_variabile_con_retry(req_w).mean(dim="eps")
                 print(f"  ✅ Dati scaricati: ora {h}")
                 
-                # Interpolazione al livello barico di 700 hPa
-                w_700 = interpolate_k2p(field=data_w, mode="linear_in_lnp", p_field=data_p, p_tc_values=[700], p_tc_units="hPa")
+                # --- MODIFICA APPLICATA QUI ---
+                # Allineamento verticale (destaggering) per portare W dai semi-livelli ai livelli completi
+                data_w_hfl = destagger(data_w, "z")
+                
+                # Interpolazione al livello barico di 700 hPa usando il campo W destaggerato
+                w_700 = interpolate_k2p(field=data_w_hfl, mode="linear_in_lnp", p_field=data_p, p_tc_values=[700], p_tc_units="hPa")
+                # -----------------------------
 
             except Exception as e:
                 print(f"  ❌ Salto l'ora {h} dopo 3 tentativi. Errore: {e}")
@@ -244,7 +250,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             percorsi_foto.append(filename)
             plt.close(chart.fig)
             
-            del data_p, data_w, w_700, w_700_geo
+            del data_p, data_w, data_w_hfl, w_700, w_700_geo
             gc.collect()
         
         if percorsi_foto:
