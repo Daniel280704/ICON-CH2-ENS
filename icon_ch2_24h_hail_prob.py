@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_hail_prob_24h.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -105,7 +115,7 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    thread_id = os.getenv("TELEGRAM_THREAD_ID_22")
+    thread_id = os.getenv("TELEGRAM_THREAD_ID_30")
     
     if not token or not chat_id: return
     
@@ -179,31 +189,24 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     )
     
     try:
-        print(f"Scaricando i dati DHAIL_MX per le 120 ore...")
-        hail_data = ogd_api.get_from_ogd(req)
+        print(f"  ⬇️  Scarico dati DHAIL_MX per le 120 ore...")
+        hail_data = scarica_variabile_con_retry(req)
+        print(f"  ✅ Dati scaricati con successo.")
     except IndexError:
         print("❌ Errore: Variabile non trovata nel catalogo o ore mancanti per DHAIL_MX.")
         return
     except Exception as e:
-        print(f"❌ Errore nel download: {e}")
+        print(f"  ❌ Errore nel download dopo 3 tentativi: {e}")
         return
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Nuovi livelli e colori orientati alle percentuali di probabilità
     my_levels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     my_colors = [
-        "#a0e6ff", # 10-20%
-        "#00a0ff", # 20-30%
-        "#00ff00", # 30-40%
-        "#ffff00", # 40-50%
-        "#ffaa00", # 50-60%
-        "#ff0000", # 60-70%
-        "#cc0000", # 70-80%
-        "#ff00ff", # 80-90%
-        "#800080"  # 90-100%
+        "#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", 
+        "#ff0000", "#cc0000", "#ff00ff", "#800080"
     ]
     
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -224,14 +227,10 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
         for h_start, h_end in intervals:
             hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
             
-            # 1. Trova il picco massimo di grandine nelle 3 ore per ogni scenario
             hail_max_3h = hail_data.sel(lead_time=hours_slice).max(dim="lead_time")
-            
-            # 2. Calcola la probabilità (%): frazione dei membri >= 0.5 cm
             hail_prob = (hail_max_3h >= 0.5).astype(float).mean(dim="eps") * 100
 
             hail_geo = regrid.iconremap(hail_prob, destination)
-            # Filtro visivo: mostra solo probabilità >= 10%
             hail_geo = hail_geo.where(hail_geo >= 10)
 
             chart = earthkit.plots.Map(domain=domain)
