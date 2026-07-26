@@ -32,7 +32,7 @@ HOURS_TO_RETRIEVE = 24
 def estrai_limiti() -> tuple[bool, datetime, list]:
     now_utc = datetime.now(timezone.utc)
     
-    # Aumentato il margine a 3 ore per garantire la completa pubblicazione del dataset
+    # Margine di 3 ore per garantire la completa pubblicazione del dataset STAC
     latest_ref_time = now_utc.replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
     
     ultima_ora_valida_str = latest_ref_time.strftime("%Y-%m-%dT%H:%M")
@@ -47,7 +47,7 @@ def estrai_limiti() -> tuple[bool, datetime, list]:
     with open(FILE_LAST_HOUR, "w") as f:
         f.write(ultima_ora_valida_str)
 
-    # Scarichiamo le 24 ore distinte (ref_time) con lead_time=1h per comporre l'accumulo
+    # Scarichiamo le 24 ore distinte (ref_time) con lead_time=1h
     ref_times_to_fetch = [latest_ref_time - timedelta(hours=i) for i in range(HOURS_TO_RETRIEVE)]
     ref_times_to_fetch.reverse() # Dal più vecchio al più recente
 
@@ -89,15 +89,15 @@ def genera_mappa_24h(latest_ref_time: datetime, ref_times: list):
             print(f"  ⬇️  Scarico dati TOT_PREC per ref_time: {ref_time.strftime('%Y-%m-%d %H:%M')}...")
             da = ogd_api.get_from_ogd(req)
             
-            # Salvaguardia contro array vuoti o non inizializzati correttamente
             if getattr(da, "size", 0) == 0:
                 print(f"  ⚠️ Dati mancanti o vuoti per {ref_time.strftime('%Y-%m-%d %H:%M')}. Salto l'ora.")
                 continue
 
             if prec_24h_tot is None:
-                prec_24h_tot = da.copy()
+                prec_24h_tot = da.copy(deep=True) # Conserva i metadati originali
             else:
-                prec_24h_tot = prec_24h_tot + da
+                # Sommiamo le matrici numpy sottostanti per non distruggere i metadati di xarray necessari per il regrid
+                prec_24h_tot.values += da.values
                 
         except Exception as e:
             print(f"  ❌ Errore nel download per {ref_time.strftime('%Y-%m-%d %H:%M')}: {e}")
@@ -107,7 +107,6 @@ def genera_mappa_24h(latest_ref_time: datetime, ref_times: list):
         print("Impossibile generare la mappa, nessun dato orario scaricato con successo.")
         return
 
-    # Limiti geografici centrati su Piemonte 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
@@ -126,6 +125,7 @@ def genera_mappa_24h(latest_ref_time: datetime, ref_times: list):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
+    # Ora i metadati sono intatti e il regrid funzionerà senza problemi
     prec_geo = regrid.iconremap(prec_24h_tot, destination)
 
     chart = earthkit.plots.Map(domain=domain)
@@ -137,7 +137,6 @@ def genera_mappa_24h(latest_ref_time: datetime, ref_times: list):
     else:
         chart.borders()
 
-    # Marker per Rivoli
     chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
 
     for lon, lat, sigla in zip(lons, lats, sigle):
