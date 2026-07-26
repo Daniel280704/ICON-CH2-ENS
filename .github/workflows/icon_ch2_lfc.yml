@@ -2,7 +2,7 @@ name: Level of Free Convection (LFC) orario
 
 on:
   schedule:
-    - cron: '35 * * * *'
+    - cron: '39 * * * *'
   workflow_dispatch:
 
 jobs:
