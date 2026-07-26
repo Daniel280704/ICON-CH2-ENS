@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_stac_24h.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -155,18 +165,15 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     intervals = []
     last_h = 0
     
-    # Costruzione intervalli: intercetta le mezzanotti locali per dividere gli step
     for h in range(1, 121):
         dt_target = dt_run_local + timedelta(hours=h)
         if dt_target.hour == 0:
             intervals.append((last_h, h))
             last_h = h
             
-    # Se il run non finisce esattamente a mezzanotte, aggiungi l'ultimo moncone fino alla fine (h=120)
     if last_h < 120:
         intervals.append((last_h, 120))
 
-    # Prepara un set di tutte le scadenze (lead times) necessarie da scaricare
     lead_times_needed = set()
     for start, end in intervals:
         if start > 0:
@@ -185,11 +192,12 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     )
     
     try:
-        print(f"Scaricando i dati TOT_PREC per le ore: {lead_times_needed}")
-        tot_prec = ogd_api.get_from_ogd(req)
+        print(f"  ⬇️  Scarico dati TOT_PREC per le ore: {lead_times_needed}...")
+        tot_prec = scarica_variabile_con_retry(req)
         prec_mean = tot_prec.mean(dim="eps")
+        print(f"  ✅ Dati scaricati con successo.")
     except Exception as e:
-        print(f"Errore nel download: {e}")
+        print(f"  ❌ Errore nel download dopo 3 tentativi: {e}")
         return
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
@@ -213,7 +221,6 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
     percorsi_foto = []
 
     for h_start, h_end in intervals:
-        # Calcolo differenza precipitazione per l'intervallo
         if h_start == 0:
             prec_diff = prec_mean.sel(lead_time=np.timedelta64(h_end, 'h'))
         else:
@@ -239,7 +246,6 @@ def genera_album_24h(dt_run_utc: datetime, nome_run: str):
         start_local = dt_run_local + timedelta(hours=h_start)
         end_local = dt_run_local + timedelta(hours=h_end)
         
-        # Testo formattato su misura in base a orari di inizio e fine dell'intervallo
         str_valida = f"Dalle {start_local.strftime('%H:%M')} del {start_local.strftime('%d/%m')} alle {end_local.strftime('%H:%M')} del {end_local.strftime('%d/%m')}"
         title = f"ICON-CH2 EPS - Precipitazione Accumulata (mm)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
         
