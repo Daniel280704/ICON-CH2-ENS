@@ -36,6 +36,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_dls.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -210,7 +220,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         percorsi_foto = []
 
         for h in ore_list:
-            print(f"Scaricamento e calcolo media ensemble per l'ora +{h}...")
             lead_time_str = [f"P{h // 24}DT{h % 24}H"]
 
             req_u_up = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="U", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
@@ -219,16 +228,18 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             req_v_sfc = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="V_10M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
             
             try:
-                data_u_ml = ogd_api.get_from_ogd(req_u_up).mean(dim="eps")
-                data_v_ml = ogd_api.get_from_ogd(req_v_up).mean(dim="eps")
-                data_u_sfc = ogd_api.get_from_ogd(req_u_sfc).mean(dim="eps")
-                data_v_sfc = ogd_api.get_from_ogd(req_v_sfc).mean(dim="eps")
+                print(f"  ⬇️  Scarico dati DLS (U, V, U_10M, V_10M) per l'ora {h}...")
+                data_u_ml = scarica_variabile_con_retry(req_u_up).mean(dim="eps")
+                data_v_ml = scarica_variabile_con_retry(req_v_up).mean(dim="eps")
+                data_u_sfc = scarica_variabile_con_retry(req_u_sfc).mean(dim="eps")
+                data_v_sfc = scarica_variabile_con_retry(req_v_sfc).mean(dim="eps")
+                print(f"  ✅ Dati scaricati per l'ora {h}")
                 
                 u_6km = interpolate_k2any(field=data_u_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
                 v_6km = interpolate_k2any(field=data_v_ml, mode="high_fold", tc_field=HFL, tc=target_coords_6km, h_field=HFL)
 
             except Exception as e:
-                print(f"Salto l'ora {h} causa errore: {e}")
+                print(f"  ❌ Salto l'ora {h} dopo 3 tentativi. Errore: {e}")
                 continue
 
             u_up = u_6km.squeeze(drop=True)
