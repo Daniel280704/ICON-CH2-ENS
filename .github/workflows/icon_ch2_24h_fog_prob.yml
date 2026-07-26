@@ -1,0 +1,85 @@
+name: Probabilità Nebbia 3h
+
+on:
+  schedule:
+    - cron: '55 * * 1,2,3,11,12 *' # Da novembre a marzo
+    - cron: '55 * 15-31 10 *'      # Dal 15 al 31 ottobre
+    - cron: '55 * 1-15 4 *'        # Dal 1 al 15 aprile
+  workflow_dispatch:
+
+jobs:
+  plot_map_fog_prob:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: System Dependencies (ecCodes)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools libeccodes-dev
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Ecosistema MeteoSwiss (meteodata-lab)
+        run: |
+          git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git
+          cd opendata-nwp-demos
+          pip install poetry
+          poetry config virtualenvs.create false
+          poetry install --no-ansi
+
+      - name: Esegui Python Script
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_52: ${{ secrets.TELEGRAM_THREAD_ID_52 }}
+        run: |
+          cp icon_ch2_24h_fog_prob.py opendata-nwp-demos/
+          cp -r shapefiles opendata-nwp-demos/ || echo "Attenzione: Cartella shapefiles non trovata"
+          
+          cp ultima_ora_icon_ch2_fog_prob_24h.txt opendata-nwp-demos/ 2>/dev/null || true
+          
+          cd opendata-nwp-demos
+          pip install pytz
+          python icon_ch2_24h_fog_prob.py
+          
+          cp ultima_ora_icon_ch2_fog_prob_24h.txt ../
+
+      - name: Salva Lock ("Hash") nel Repository 
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          LOCK_FILE="ultima_ora_icon_ch2_fog_prob_24h.txt"
+          
+          if [ -f "$LOCK_FILE" ]; then
+            git add "$LOCK_FILE"
+          else
+            echo "Il file $LOCK_FILE non esiste, ignoro l'add."
+          fi
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Aggiornamento lock file ICON-CH2 Probabilità Nebbia [skip ci]"
+            
+            MAX_RETRIES=10
+            RETRY_COUNT=0
+            until git push; do
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+                echo "Impossibile fare il push dopo $MAX_RETRIES tentativi."
+                exit 1
+              fi
+              echo "Conflitto rilevato. Ritento push ($RETRY_COUNT/$MAX_RETRIES)..."
+              sleep $((RANDOM % 15 + 5))
+              git pull --rebase origin main
+            done
+          else
+            echo "Nessuna modifica da salvare."
+          fi
