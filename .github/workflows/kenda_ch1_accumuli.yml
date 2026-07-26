@@ -1,4 +1,4 @@
-name: KENDA-CH1 Accumuli Multipli (24h/48h/72h)
+name: KENDA-CH1 Accumuli (24/48/72h Dinamici)
 
 on:
   schedule:
@@ -43,9 +43,9 @@ jobs:
           cp kenda_ch1_accumuli.py opendata-nwp-demos/
           cp -r shapefiles opendata-nwp-demos/ || echo "Nessun shapefile trovato"
           
-          # Copia lock e storico matrici dentro la working directory
+          # Copia lock e archivio orario dentro la working directory
           cp lock_kenda_ch1_accumuli.txt opendata-nwp-demos/ 2>/dev/null || true
-          cp kenda_matrix_*.npy opendata-nwp-demos/ 2>/dev/null || true
+          cp -r kenda_archive opendata-nwp-demos/ 2>/dev/null || true
           
           cd opendata-nwp-demos
           pip install pytz
@@ -53,22 +53,22 @@ jobs:
           
           # Riporta i file generati/aggiornati nella root per il commit
           cp lock_kenda_ch1_accumuli.txt ../ 2>/dev/null || true
-          cp kenda_matrix_*.npy ../ 2>/dev/null || true
+          cp -r kenda_archive ../ 2>/dev/null || true
 
-      - name: Salva Storico e Lock
+      - name: Salva Archivio e Lock
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
-          # Aggiunge Lock e file storici NumPy
+          # Aggiunge Lock e file storici orari
           git add lock_kenda_ch1_accumuli.txt 2>/dev/null || true
-          git add kenda_matrix_*.npy 2>/dev/null || true
+          git add kenda_archive/*.npy 2>/dev/null || true
           
-          # Rimuove file storici cancellati dallo script di pulizia python
+          # Rimuove file storici vecchi cancellati dallo script di pulizia python
           git add -u
           
           if ! git diff --staged --quiet; then
-            git commit -m "Aggiornamento storico accumuli KENDA-CH1 [skip ci]"
+            git commit -m "Aggiornamento archivio orario KENDA-CH1 [skip ci]"
             
             MAX_RETRIES=10
             RETRY_COUNT=0
