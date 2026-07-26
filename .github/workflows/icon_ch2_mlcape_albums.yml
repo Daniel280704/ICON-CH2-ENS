@@ -2,7 +2,7 @@ name: MLCAPE
 
 on:
   schedule:
-    - cron: '13 * * * *'
+    - cron: '35 * * * *'
   workflow_dispatch:
 
 jobs:
