@@ -22,7 +22,7 @@ from earthkit.data import config
 
 from meteodatalab import ogd_api
 from meteodatalab.operators import regrid
-from meteodatalab.operators.destagger import destagger
+from meteodatalab.operators.destagger import destagger  # <--- AGGIUNTO IMPORT
 from meteodatalab.operators.vertical_interpolation import interpolate_k2p
 from rasterio.crs import CRS
 
@@ -176,6 +176,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
+    # Livelli ottimizzati per la velocità verticale ascendente (Updraft, W) in m/s
     my_levels = [0.05, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0]
     my_colors = [
         "#e0f3f8", "#abd9e9", "#74add1", "#4575b4", 
@@ -199,41 +200,30 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         percorsi_foto = []
 
         for h in ore_list:
-            # Creiamo la lista per le 3 ore (es. se h=6 -> ore 4, 5, 6)
-            lead_times_3h = [f"P{step // 24}DT{step % 24}H" for step in range(h - 2, h + 1)]
+            lead_time_str = [f"P{h // 24}DT{h % 24}H"]
 
-            req_p = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="P", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_3h)
-            req_w = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="W", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_3h)
+            req_p = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="P", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
+            req_w = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="W", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
             
             try:
-                print(f"  ⬇️  Scarico dati P, W per la finestra ore [{h-2} - {h}]...")
+                print(f"  ⬇️  Scarico dati P, W per l'ora {h}...")
+                data_p = scarica_variabile_con_retry(req_p).mean(dim="eps")
+                data_w = scarica_variabile_con_retry(req_w).mean(dim="eps")
+                print(f"  ✅ Dati scaricati: ora {h}")
                 
-                # Attenzione: Rimuoviamo il .mean() immediato qui per preservare l'EPS
-                data_p = scarica_variabile_con_retry(req_p)
-                data_w = scarica_variabile_con_retry(req_w)
-                print(f"  ✅ Dati scaricati")
-                
-                # Allineamento verticale
+                # --- MODIFICA APPLICATA QUI ---
+                # Allineamento verticale (destaggering) per portare W dai semi-livelli ai livelli completi
                 data_w_hfl = destagger(data_w, "z")
                 
-                # Interpolazione a 700 hPa per tutti i membri EPS e per tutte e 3 le ore
+                # Interpolazione al livello barico di 700 hPa usando il campo W destaggerato
                 w_700 = interpolate_k2p(field=data_w_hfl, mode="linear_in_lnp", p_field=data_p, p_tc_values=[700], p_tc_units="hPa")
-                
-                # Trova dinamicamente il nome della dimensione temporale
-                time_dims = [d for d in w_700.dims if d in ["time", "valid_time", "step", "lead_time"]]
-                time_dim = time_dims[0] if time_dims else "time"
-                
-                # ---> LA MODIFICA CHIAVE <---
-                # 1. Trova il valore massimo su ogni punto griglia nelle 3 ore (dimensione temporale)
-                # 2. Calcola la media dei massimi estratti per ogni scenario (dimensione eps)
-                w_700_max_mean = w_700.max(dim=time_dim).mean(dim="eps")
+                # -----------------------------
 
             except Exception as e:
-                print(f"  ❌ Salto la finestra dell'ora {h} dopo 3 tentativi. Errore: {e}")
+                print(f"  ❌ Salto l'ora {h} dopo 3 tentativi. Errore: {e}")
                 continue
 
-            # Mappiamo il DataArray risultante, eliminando le dimensioni superflue come p_tc
-            w_700_geo = regrid.iconremap(w_700_max_mean.squeeze(drop=True), destination)
+            w_700_geo = regrid.iconremap(w_700.squeeze(drop=True), destination)
 
             chart = earthkit.plots.Map(domain=domain)
             chart.grid_cells(w_700_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
@@ -248,11 +238,9 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
                 chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
                 chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
 
-            # Titolo aggiornato
             target_local = dt_run_local + timedelta(hours=h)
-            start_local = dt_run_local + timedelta(hours=h-3)
-            str_valida = f"Valido da: {start_local.strftime('%H:00')} a {target_local.strftime('%H:00 del %d/%m')}"
-            title = f"ICON-CH2 EPS - Updraft (W) a 700 hPa (m/s)\nMEDIA DEI MASSIMI SULLE 3 ORE | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
+            str_valida = f"Valido per le: {target_local.strftime('%H:%M del %d/%m')}"
+            title = f"ICON-CH2 EPS - Updraft (W) a 700 hPa (m/s)\nMEDIA SCENARI | Run: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')}\n{str_valida}"
             
             chart.title(title)
             chart.legend(label="Updraft (m/s)")
@@ -262,12 +250,11 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             percorsi_foto.append(filename)
             plt.close(chart.fig)
             
-            # Pulizia per gestire la RAM
-            del data_p, data_w, data_w_hfl, w_700, w_700_max_mean, w_700_geo
+            del data_p, data_w, data_w_hfl, w_700, w_700_geo
             gc.collect()
         
         if percorsi_foto:
-            caption_album = f"Updraft (W) 700 hPa Media Massimi (3h)\n{block_name}\nRun {nome_run}"
+            caption_album = f"Updraft (W) a 700 hPa Media EPS\n{block_name}\nRun {nome_run}"
             invia_album_telegram(percorsi_foto, caption_album)
             
             for f in percorsi_foto:
