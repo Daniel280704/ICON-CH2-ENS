@@ -32,27 +32,31 @@ def estrai_finestra_temporale():
     rome_tz = pytz.timezone("Europe/Rome")
     now_local = datetime.now(rome_tz)
     
-    # Mezzanotte di oggi (ora locale italiana)
-    today_midnight_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    # Mezzanotte di ieri (ora locale italiana)
-    yesterday_midnight_local = today_midnight_local - timedelta(days=1)
+    # Determina l'orario di fine finestra: le 19:00 più recenti passate
+    if now_local.hour >= 19:
+        end_local = now_local.replace(hour=19, minute=0, second=0, microsecond=0)
+    else:
+        end_local = (now_local - timedelta(days=1)).replace(hour=19, minute=0, second=0, microsecond=0)
+        
+    # L'inizio è esattamente 24 ore prima
+    start_local = end_local - timedelta(hours=24)
     
-    target_date_str = yesterday_midnight_local.strftime("%Y-%m-%d")
+    # Target string per il file di lock (es. 2026-07-26_1900)
+    target_date_str = end_local.strftime("%Y-%m-%d_1900")
     
     # Controllo sistema di Lock
     if os.path.exists(LOCK_FILE):
         with open(LOCK_FILE, "r") as f:
             saved_date = f.read().strip()
         if saved_date == target_date_str:
-            print(f"✅ Precipitazioni per la giornata {target_date_str} già elaborate e inviate. Esco.")
-            return False, None, None, []
+            print(f"✅ Precipitazioni per la finestra {target_date_str} già elaborate e inviate. Esco.")
+            return False, None, None, None, []
             
-    # Per ottenere l'accumulo tra yesterday_midnight e today_midnight, 
-    # serve scaricare i run orari in formato UTC
-    start_utc = yesterday_midnight_local.astimezone(timezone.utc)
+    # Per ottenere l'accumulo, servono i run orari in formato UTC
+    start_utc = start_local.astimezone(timezone.utc)
     ref_times = [start_utc + timedelta(hours=i) for i in range(24)]
     
-    return True, target_date_str, yesterday_midnight_local, ref_times
+    return True, target_date_str, start_local, end_local, ref_times
 
 def invia_telegram(file_path: str, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
@@ -75,12 +79,12 @@ def invia_telegram(file_path: str, caption: str):
         print(f"Errore invio foto: {e}")
 
 def main():
-    is_new, target_date_str, start_local, ref_times = estrai_finestra_temporale()
+    is_new, target_date_str, start_local, end_local, ref_times = estrai_finestra_temporale()
     
     if not is_new:
         sys.exit(0) # Blocca lo script silenziosamente, la Action farà skip
         
-    print(f"🚀 Inizio calcolo precipitazioni per il {target_date_str} (da mezzanotte a mezzanotte)...")
+    print(f"🚀 Inizio calcolo precipitazioni per il {target_date_str} (dalle 19:00 alle 19:00)...")
     
     prec_24h_tot = None
     for ref_time in ref_times:
@@ -148,7 +152,7 @@ def main():
         chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
         chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
     
-    str_valida = f"Accumulo esatto 24h: {start_local.strftime('%d/%m/%Y')} (da mezzanotte a mezzanotte)"
+    str_valida = f"Accumulo 24h: dalle {start_local.strftime('%H:%M')} del {start_local.strftime('%d/%m')} alle {end_local.strftime('%H:%M')} del {end_local.strftime('%d/%m')}"
     title = f"KENDA-CH1 Analisi - Precipitazioni (mm)\n{str_valida}"
     
     chart.title(title)
@@ -158,7 +162,7 @@ def main():
     chart.save(filename)
     plt.close(chart.fig)
     
-    caption_album = f"KENDA-CH1 Analisi: Precipitazioni Giorno Calendario\n{str_valida}"
+    caption_album = f"KENDA-CH1 Analisi: Precipitazioni 24h\n{str_valida}"
     invia_telegram(filename, caption_album)
     
     if os.path.exists(filename): os.remove(filename)
