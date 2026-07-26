@@ -263,7 +263,7 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
             
             plt.close(chart.fig)
         
-        caption_album = f"🌫 ICON-CH2 EPS: Probabilità Nebbia (Visibilità < 1000m)\nFasce triorarie del {day_str}\nRun {nome_run}"
+        caption_album = f"ICON-CH2 EPS: Probabilità Nebbia (Visibilità < 1000m)\nFasce triorarie del {day_str}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
         
         for f in percorsi_foto:
