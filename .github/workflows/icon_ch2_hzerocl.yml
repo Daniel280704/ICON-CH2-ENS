@@ -1,7 +1,7 @@
 name: Zero Termico (HZEROCL) orario
 on:
   schedule:
-    - cron: '35 * * * *'
+    - cron: '27 * * * *'
   workflow_dispatch:
 jobs:
   plot_map:
