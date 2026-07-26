@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_snow_stac.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -46,7 +56,6 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
             
     if end_idx == -1: return False, "", None
     
-    # "L'hash" o "lock" temporale usato per bloccare i doppioni
     ultima_ora_valida_str = times[end_idx]
     
     dt_end_local = datetime.fromisoformat(ultima_ora_valida_str)
@@ -70,16 +79,13 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
         print(f"⏳ Run {nome_run} in caricamento... ({actual_points}/{expected_points} ore)")
         return False, "", None
         
-    # Controllo del lock file
     if os.path.exists(FILE_LAST_HOUR):
         with open(FILE_LAST_HOUR, "r") as f:
             ultima_ora_salvata = f.read().strip()
-        # Se il dato trasla nel tempo e produce una nuova ora valida, lo eseguirà
         if ultima_ora_valida_str <= ultima_ora_salvata:
             print(f"✅ Run ICON-CH2 {nome_run} (Neve) già elaborato (Ultimo blocco: {ultima_ora_valida_str}).")
             return False, "", None
 
-    # Aggiorna il lock file
     with open(FILE_LAST_HOUR, "w") as f:
         f.write(ultima_ora_valida_str)
 
@@ -185,7 +191,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala dei colori ottimizzata per la precipitazione nevosa (toni di ciano, blu e viola)
     my_levels = [0.1, 0.5, 1, 2, 3, 5, 7, 10, 15, 20, 25, 30, 40, 50, 75, 100]
     my_colors = ["#e6f2ff", "#cce6ff", "#99ccff", "#66b3ff", "#3399ff", "#0080ff", "#0066cc", "#004d99", "#4d0099", "#7300e6", "#9933ff", "#cc99ff", "#ff99ff", "#ff33cc", "#cc0099"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -209,7 +214,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             
         lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
 
-        # Richiesta modificata per la Neve
         req = ogd_api.Request(
             collection="ogd-forecasting-icon-ch2",
             variable="SNOW_GSP",
@@ -219,10 +223,12 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         )
         
         try:
-            tot_snow = ogd_api.get_from_ogd(req)
+            print(f"  ⬇️  Scarico dati SNOW_GSP per {len(lead_times_needed)} ore...")
+            tot_snow = scarica_variabile_con_retry(req)
             snow_mean = tot_snow.mean(dim="eps")
+            print(f"  ✅ Dati scaricati: {len(lead_times_needed)} ore")
         except Exception as e:
-            print(f"Salto il blocco {block_name} causa errore download: {e}")
+            print(f"  ❌ Salto il blocco {block_name} dopo 3 tentativi. Errore: {e}")
             continue
 
         percorsi_foto = []
