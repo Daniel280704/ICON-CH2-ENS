@@ -2,7 +2,7 @@ name: Updraft 700hPa (W) Hourly
 
 on:
   schedule:
-    - cron: '50 */2 * * *'
+    - cron: '58 */2 * * *'
   workflow_dispatch:
 
 jobs:
