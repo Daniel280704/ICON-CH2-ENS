@@ -2,7 +2,7 @@ name: Mid-Level Lapse Rate 700-500hPa
 
 on:
   schedule:
-    - cron: '45 */2 * * *'
+    - cron: '50 */2 * * *'
   workflow_dispatch:
 
 jobs:
