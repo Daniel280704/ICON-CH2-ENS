@@ -48,8 +48,8 @@ def genera(dt_utc, n_run):
     f_prov = cfeature.ShapelyFeature(shpreader.Reader("shapefiles/ProvCM01012026_WGS84.shp").geometries(), ccrs.PlateCarree(), edgecolor='black', facecolor='none', linewidth=0.5, linestyle=':') if os.path.exists("shapefiles/ProvCM01012026_WGS84.shp") else None
 
     # Zero Termico: da colori freddi (quote basse) a colori caldi (quote alte)
-    my_levels = [0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000]
-    my_colors = ["#313695", "#4575b4", "#74add1", "#abd9e9", "#e0f3f8", "#fee090", "#fdae61", "#f46d43", "#d73027", "#a50026"]
+    my_levels = [0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000]
+    my_colors = ["#313695", "#4575b4", "#74add1", "#abd9e9", "#e0f3f8", "#fee090", "#fdae61", "#f46d43", "#d73027", "#a50026", "#67001f", "#3d0012"]
 
     for bn, ore in raggruppa(dt_loc).items():
         try: vm = ogd_api.get_from_ogd(ogd_api.Request("ogd-forecasting-icon-ch2", "HZEROCL", dt_utc, True, [f"P{l//24}DT{l%24}H" for l in ore])).mean(dim="eps")
