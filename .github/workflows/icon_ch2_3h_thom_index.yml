@@ -2,9 +2,9 @@ name: Disagio da Caldo 3h (Thom)
 
 on:
   schedule:
-    - cron: '10 * 15-30 4 *'      # Dal 15 al 30 aprile
-    - cron: '10 * * 5,6,7,8,9 *'  # Da maggio a settembre
-    - cron: '10 * 1-15 10 *'      # Dal 1 al 15 ottobre
+    - cron: '03 * 15-30 4 *'      # Dal 15 al 30 aprile
+    - cron: '03 * * 5,6,7,8,9 *'  # Da maggio a settembre
+    - cron: '03 * 1-15 10 *'      # Dal 1 al 15 ottobre
   workflow_dispatch:
 
 jobs:
