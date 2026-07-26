@@ -32,17 +32,17 @@ def estrai_finestra_temporale():
     rome_tz = pytz.timezone("Europe/Rome")
     now_local = datetime.now(rome_tz)
     
-    # Determina l'orario di fine finestra: le 19:00 più recenti passate
-    if now_local.hour >= 19:
-        end_local = now_local.replace(hour=19, minute=0, second=0, microsecond=0)
+    # Determina l'orario di fine finestra: le 20:00 più recenti passate
+    if now_local.hour >= 20:
+        end_local = now_local.replace(hour=20, minute=0, second=0, microsecond=0)
     else:
-        end_local = (now_local - timedelta(days=1)).replace(hour=19, minute=0, second=0, microsecond=0)
+        end_local = (now_local - timedelta(days=1)).replace(hour=20, minute=0, second=0, microsecond=0)
         
-    # L'inizio è esattamente 24 ore prima
+    # L'inizio è esattamente 24 ore prima (le 20:00 del giorno prima)
     start_local = end_local - timedelta(hours=24)
     
-    # Target string per il file di lock (es. 2026-07-26_1900)
-    target_date_str = end_local.strftime("%Y-%m-%d_1900")
+    # Target string per il file di lock (es. 2026-07-26_2000)
+    target_date_str = end_local.strftime("%Y-%m-%d_2000")
     
     # Controllo sistema di Lock
     if os.path.exists(LOCK_FILE):
@@ -84,7 +84,7 @@ def main():
     if not is_new:
         sys.exit(0) # Blocca lo script silenziosamente, la Action farà skip
         
-    print(f"🚀 Inizio calcolo precipitazioni per il {target_date_str} (dalle 19:00 alle 19:00)...")
+    print(f"🚀 Inizio calcolo precipitazioni per il {target_date_str} (dalle 20:00 alle 20:00)...")
     
     prec_24h_tot = None
     for ref_time in ref_times:
