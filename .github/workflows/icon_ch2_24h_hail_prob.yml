@@ -2,7 +2,7 @@ name: Probabilità Grandine 24h
 
 on:
   schedule:
-    - cron: '28 * * * *' 
+    - cron: '05 * * * *' 
   workflow_dispatch:
 
 jobs:
