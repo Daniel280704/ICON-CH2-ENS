@@ -34,6 +34,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_snow_prob.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -106,7 +116,6 @@ def fetch_dati_con_retry() -> dict:
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    # Aggiornato al thread corretto
     thread_id = os.getenv("TELEGRAM_THREAD_ID_53")
     
     if not token or not chat_id: return
@@ -184,15 +193,8 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
     my_levels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     my_colors = [
-        "#a0e6ff", # 10-20%
-        "#00a0ff", # 20-30%
-        "#00ff00", # 30-40%
-        "#ffff00", # 40-50%
-        "#ffaa00", # 50-60%
-        "#ff0000", # 60-70%
-        "#cc0000", # 70-80%
-        "#ff00ff", # 80-90%
-        "#800080"  # 90-100%
+        "#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", 
+        "#ff0000", "#cc0000", "#ff00ff", "#800080"
     ]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
 
@@ -224,9 +226,11 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         )
         
         try:
-            tot_snow = ogd_api.get_from_ogd(req)
+            print(f"  ⬇️  Scarico dati SNOW_GSP per {len(lead_times_needed)} ore...")
+            tot_snow = scarica_variabile_con_retry(req)
+            print(f"  ✅ Dati scaricati: {len(lead_times_needed)} ore")
         except Exception as e:
-            print(f"Salto il blocco {block_name} causa errore download: {e}")
+            print(f"  ❌ Salto il blocco {block_name} dopo 3 tentativi. Errore: {e}")
             continue
 
         percorsi_foto = []
@@ -237,13 +241,9 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             else:
                 snow_diff = tot_snow.sel(lead_time=np.timedelta64(h, 'h')) - tot_snow.sel(lead_time=np.timedelta64(h-1, 'h'))
 
-            # Soglia di 0.5 mm eq. acqua all'ora
             prob_xr = (snow_diff >= 0.5).astype(float).mean(dim="eps") * 100
             
-            # Regrid sulla variabile di probabilità
             snow_geo = regrid.iconremap(prob_xr, destination)
-            
-            # Filtro visivo: mostra solo probabilità >= 10%
             snow_geo = snow_geo.where(snow_geo >= 10)
 
             chart = earthkit.plots.Map(domain=domain)
@@ -265,7 +265,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             end_local = dt_run_local + timedelta(hours=h)
             str_valida = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M del %d/%m')}"
 
-            title = f"ICON-CH2 EPS - Probabilità Neve $\\ge$ 0.5 mm/h eq. acqua (%)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
+            title = f"ICON-CH2 EPS - Probabilità Neve ≥ 0.5 mm/h eq. acqua (%)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
             chart.title(title)
             chart.legend(label="Probabilità (%)")
 
@@ -275,7 +275,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             
             plt.close(chart.fig)
         
-        caption_album = f"❄️ ICON-CH2 EPS: Probabilità Neve oraria $\\ge$ 0.5 mm eq. acqua\n{block_name}\nRun {nome_run}"
+        caption_album = f"❄️ ICON-CH2 EPS: Probabilità Neve oraria ≥ 0.5 mm eq. acqua\n{block_name}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
         
         for f in percorsi_foto:
