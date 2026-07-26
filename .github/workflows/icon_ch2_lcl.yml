@@ -2,7 +2,7 @@ name: Lifting Condensation Level (LCL) orario
 
 on:
   schedule:
-    - cron: '18 * * * *'
+    - cron: '35 * * * *'
   workflow_dispatch:
 
 jobs:
