@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_cdct.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -156,7 +166,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # CDCT scale 0 - 15000 (salti di 1000)
     my_levels = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000, 14000, 15000]
     my_colors = ["#f7fcf0", "#e0f3db", "#ccebc5", "#a8ddb5", "#7bccc4", "#4eb3d3", "#2b8cbe", "#0868ac", "#084081", "#fdbb84", "#fc8d59", "#ef6548", "#d7301f", "#b30000", "#7f0000"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -183,9 +192,13 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         )
         
         try:
-            var_data = ogd_api.get_from_ogd(req)
+            print(f"  ⬇️  Scarico dati CDCT per {len(ore_list)} ore...")
+            var_data = scarica_variabile_con_retry(req)
             var_mean = var_data.mean(dim="eps")
-        except: continue
+            print(f"  ✅ Dati scaricati: {len(ore_list)} ore")
+        except Exception as e:
+            print(f"  ❌ Salto il blocco {block_name} dopo 3 tentativi. Errore: {e}")
+            continue
 
         percorsi_foto = []
         
