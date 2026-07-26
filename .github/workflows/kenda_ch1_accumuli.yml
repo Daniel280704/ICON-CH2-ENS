@@ -1,0 +1,81 @@
+name: KENDA-CH1 Accumuli Multipli (24h/48h/72h)
+
+on:
+  schedule:
+    # Esegue al minuto 13 delle ore 01, 02, 03, 04 UTC (ovvero le 03:13, 04:13, 05:13 e 06:13 CEST italiane)
+    - cron: '13 1,2,3,4 * * *'
+  workflow_dispatch:
+
+jobs:
+  plot_map:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write 
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools libeccodes-dev
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Ecosistema
+        run: |
+          git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git
+          cd opendata-nwp-demos
+          pip install poetry
+          poetry config virtualenvs.create false
+          poetry install --no-ansi
+
+      - name: Esegui Python Script
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_19080: ${{ secrets.TELEGRAM_THREAD_ID_19080 }}
+        run: |
+          cp kenda_ch1_accumuli.py opendata-nwp-demos/
+          cp -r shapefiles opendata-nwp-demos/ || echo "Nessun shapefile trovato"
+          
+          # Copia lock e storico matrici dentro la working directory
+          cp lock_kenda_ch1_accumuli.txt opendata-nwp-demos/ 2>/dev/null || true
+          cp kenda_matrix_*.npy opendata-nwp-demos/ 2>/dev/null || true
+          
+          cd opendata-nwp-demos
+          pip install pytz
+          python kenda_ch1_accumuli.py
+          
+          # Riporta i file generati/aggiornati nella root per il commit
+          cp lock_kenda_ch1_accumuli.txt ../ 2>/dev/null || true
+          cp kenda_matrix_*.npy ../ 2>/dev/null || true
+
+      - name: Salva Storico e Lock
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Aggiunge Lock e file storici NumPy
+          git add lock_kenda_ch1_accumuli.txt 2>/dev/null || true
+          git add kenda_matrix_*.npy 2>/dev/null || true
+          
+          # Rimuove file storici cancellati dallo script di pulizia python
+          git add -u
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Aggiornamento storico accumuli KENDA-CH1 [skip ci]"
+            
+            MAX_RETRIES=10
+            RETRY_COUNT=0
+            until git push; do
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then exit 1; fi
+              sleep $((RANDOM % 15 + 5))
+              git pull --rebase origin main
+            done
+          fi
