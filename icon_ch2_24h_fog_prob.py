@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_fog_prob_24h.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -170,7 +180,6 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     lead_times_needed = list(range(1, 121))
     lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
 
-    # Scarichiamo la variabile Visibilità (VIS) in metri
     req = ogd_api.Request(
         collection="ogd-forecasting-icon-ch2",
         variable="VIS", 
@@ -180,31 +189,24 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     )
     
     try:
-        print(f"Scaricando i dati VIS (Visibility) per le 120 ore...")
-        vis_data = ogd_api.get_from_ogd(req)
+        print(f"  ⬇️  Scarico dati VIS (Visibility) per le 120 ore...")
+        vis_data = scarica_variabile_con_retry(req)
+        print(f"  ✅ Dati scaricati con successo.")
     except IndexError:
         print("❌ Errore: Variabile non trovata nel catalogo o ore mancanti per VIS.")
         return
     except Exception as e:
-        print(f"❌ Errore nel download: {e}")
+        print(f"  ❌ Errore nel download dopo 3 tentativi: {e}")
         return
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Livelli e colori identici allo script fornito per la probabilità
     my_levels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     my_colors = [
-        "#a0e6ff", # 10-20%
-        "#00a0ff", # 20-30%
-        "#00ff00", # 30-40%
-        "#ffff00", # 40-50%
-        "#ffaa00", # 50-60%
-        "#ff0000", # 60-70%
-        "#cc0000", # 70-80%
-        "#ff00ff", # 80-90%
-        "#800080"  # 90-100%
+        "#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", 
+        "#ff0000", "#cc0000", "#ff00ff", "#800080"
     ]
     
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -225,15 +227,10 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
         for h_start, h_end in intervals:
             hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
             
-            # 1. Trova la visibilità minima nelle 3 ore (condizione peggiore)
             vis_min_3h = vis_data.sel(lead_time=hours_slice).min(dim="lead_time")
-            
-            # 2. Calcola la probabilità (%): frazione dei membri con Visibilità < 1000m (Nebbia)
             fog_prob = (vis_min_3h < 1000).astype(float).mean(dim="eps") * 100
 
             fog_geo = regrid.iconremap(fog_prob, destination)
-            
-            # Filtro visivo: mostra solo probabilità >= 10%
             fog_geo = fog_geo.where(fog_geo >= 10)
 
             chart = earthkit.plots.Map(domain=domain)
