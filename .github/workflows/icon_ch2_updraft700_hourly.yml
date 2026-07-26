@@ -1,0 +1,69 @@
+name: Updraft 700hPa (W) Hourly
+
+on:
+  schedule:
+    - cron: '50 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  plot_updraft:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: System Dependencies (ecCodes)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools libeccodes-dev
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Ecosistema MeteoSwiss
+        run: |
+          git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git
+          cd opendata-nwp-demos
+          pip install poetry
+          poetry config virtualenvs.create false
+          poetry install --no-ansi
+
+      - name: Esegui Python Script Updraft 700hPa
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_31: ${{ secrets.TELEGRAM_THREAD_ID_31 }}
+        run: |
+          cp icon_ch2_updraft700_hourly.py opendata-nwp-demos/
+          cp -r shapefiles opendata-nwp-demos/ || echo "Nessuna cartella shapefiles"
+          cp ultima_ora_icon_ch2_updraft700.txt opendata-nwp-demos/ 2>/dev/null || true
+          
+          cd opendata-nwp-demos
+          pip install pytz
+          python icon_ch2_updraft700_hourly.py
+          cp ultima_ora_icon_ch2_updraft700.txt ../
+
+      - name: Salva Lock Updraft nel Repo
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          LOCK_FILE="ultima_ora_icon_ch2_updraft700.txt"
+          if [ -f "$LOCK_FILE" ]; then git add "$LOCK_FILE"; fi
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Aggiornamento lock file Updraft 700hPa [skip ci]"
+            MAX_RETRIES=10
+            RETRY_COUNT=0
+            until git push; do
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then exit 1; fi
+              sleep $((RANDOM % 15 + 5))
+              git pull --rebase origin main
+            done
+          fi
