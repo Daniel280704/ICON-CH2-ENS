@@ -27,9 +27,17 @@ jobs:
 
       - name: Setup Ecosistema MeteoSwiss (meteodata-lab)
         run: |
+          # 1. FIX PIP E ATTRS: Evita il crash dell'ambiente durante l'uso di Poetry
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade --force-reinstall attrs
+          
+          # 2. Setup standard
           git clone https://github.com/MeteoSwiss/opendata-nwp-demos.git
           cd opendata-nwp-demos
           pip install poetry
+          
+          # 3. Pulisci la cache per evitare pacchetti corazzati e installa
+          poetry cache clear --all pypi || true
           poetry config virtualenvs.create false
           poetry install --no-ansi
 
