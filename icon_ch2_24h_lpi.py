@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_lpi_24h.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -152,16 +162,13 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     rome_tz = pytz.timezone("Europe/Rome")
     dt_run_local = dt_run_utc.astimezone(rome_tz)
     
-    # Raggruppamento per giornate, generando fasce allineate agli orari 00, 03, 06, 09...
     intervals_by_day = {}
     last_h = 0
     
     for h in range(1, 121):
         dt_target = dt_run_local + timedelta(hours=h)
-        # Troviamo lo scatto triorario locale o la fine della run
         if dt_target.hour % 3 == 0 or h == 120:
             if last_h < h:
-                # La fascia appartiene al giorno di inizio dell'intervallo
                 dt_start_interval = dt_run_local + timedelta(hours=last_h)
                 day_str = dt_start_interval.strftime('%d/%m/%Y')
                 
@@ -182,17 +189,17 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     )
     
     try:
-        print(f"Scaricando i dati LPI_MAX per le 120 ore...")
-        lpi_data = ogd_api.get_from_ogd(req)
+        print(f"  ⬇️  Scarico dati LPI_MAX per le 120 ore...")
+        lpi_data = scarica_variabile_con_retry(req)
+        print(f"  ✅ Dati scaricati con successo.")
     except Exception as e:
-        print(f"Errore nel download: {e}")
+        print(f"  ❌ Errore nel download dopo 3 tentativi: {e}")
         return
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Scala LPI ottimizzata per Media Scenari (max 30+)
     my_levels = [1, 3, 6, 9, 12, 15, 20, 25, 30]
     my_colors = [
         "#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", 
@@ -217,10 +224,8 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
         for h_start, h_end in intervals:
             hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
             
-            # Calcolo corretto: PRIMA troviamo il massimo per ogni scenario nella fascia oraria, POI facciamo la media
             lpi_interval = lpi_data.sel(lead_time=hours_slice).max(dim="lead_time").mean(dim="eps")
 
-            # Regrid a celle regolari
             lpi_geo = regrid.iconremap(lpi_interval, destination)
             lpi_geo = lpi_geo.where(lpi_geo >= 1)
 
@@ -254,7 +259,6 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
             
             plt.close(chart.fig)
         
-        # Inviamo l'album raccolto per l'intera giornata (massimo 8 mappe)
         caption_album = f"ICON-CH2 EPS: Rischio Fulmini\nFasce triorarie del {day_str}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
         
