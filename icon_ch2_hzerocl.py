@@ -18,7 +18,6 @@ def scarica_variabile_con_retry(request, max_retries=6):
             if tentativo > 0:
                 print(f"    🔄 Retry {tentativo + 1}/{max_retries} in corso...")
             
-            # Tenta il download vero e proprio
             return ogd_api.get_from_ogd(request)
             
         except Exception as e:
@@ -26,16 +25,12 @@ def scarica_variabile_con_retry(request, max_retries=6):
                 print(f"    💥 Fallimento definitivo dopo {max_retries} tentativi.")
                 raise e
             
-            # Pausa progressiva (10s, 20s, 30s...) per far sbloccare il server
             delay = 10 * (tentativo + 1)
             print(f"    ⚠️ Errore o blocco di rete: {e}")
             print(f"    🧹 Svuoto la cache corrotta e attendo {delay}s...")
             
-            # FORZATURA: Svuota la cache di earthkit per eliminare i file a metà
-            try:
-                earthkit.data.cache.purge()
-            except Exception:
-                pass
+            try: earthkit.data.cache.purge()
+            except Exception: pass
                 
             time.sleep(delay)
 
@@ -60,15 +55,6 @@ def invia_album(file_paths, caption):
     except: pass
     finally: [v.close() for v in f.values()]
 
-def raggruppa(dt_run):
-    b = {}
-    for h in range(1, 121):
-        dt = dt_run + timedelta(hours=h); hr = dt.hour
-        nm = "18-24" if hr == 0 else "00-06" if 1<=hr<=6 else "06-12" if 7<=hr<=12 else "12-18" if 13<=hr<=18 else "18-24"
-        ds = (dt.date() - timedelta(days=1)).strftime("%Y-%m-%d") if hr == 0 else dt.date().strftime("%Y-%m-%d")
-        b.setdefault(f"{ds} (Fascia {nm})", []).append(h)
-    return b
-
 def genera(dt_utc, n_run):
     dt_loc = dt_utc.astimezone(pytz.timezone("Europe/Rome"))
     dest = regrid.RegularGrid(CRS.from_string("epsg:4326"), 300, 300, 6.0, 10.5, 43.5, 46.8)
@@ -76,31 +62,57 @@ def genera(dt_utc, n_run):
     f_reg = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
     f_prov = cfeature.ShapelyFeature(shpreader.Reader("shapefiles/ProvCM01012026_WGS84.shp").geometries(), ccrs.PlateCarree(), edgecolor='black', facecolor='none', linewidth=0.5, linestyle=':') if os.path.exists("shapefiles/ProvCM01012026_WGS84.shp") else None
 
-    # Zero Termico: da colori freddi (quote basse) a colori caldi (quote alte)
     my_levels = [0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000]
     my_colors = ["#313695", "#4575b4", "#74add1", "#abd9e9", "#e0f3f8", "#fee090", "#fdae61", "#f46d43", "#d73027", "#a50026", "#67001f", "#3d0012"]
 
-    for bn, ore in raggruppa(dt_loc).items():
-        req = ogd_api.Request("ogd-forecasting-icon-ch2", "HZEROCL", dt_utc, True, [f"P{l//24}DT{l%24}H" for l in ore])
-        try:
-            print(f"  ⬇️  Scarico dati HZEROCL per {len(ore)} ore...")
-            vm_raw = scarica_variabile_con_retry(req)
-            vm = vm_raw.mean(dim="eps")
-            print(f"  ✅ Dati scaricati: {len(ore)} ore")
-        except Exception as e:
-            print(f"  ❌ Salto il blocco {bn} dopo 3 tentativi. Errore: {e}")
-            continue
-            
+    intervals_by_day = {}
+    last_h = 0
+    
+    for h in range(1, 121):
+        dt_target = dt_loc + timedelta(hours=h)
+        if dt_target.hour % 3 == 0 or h == 120:
+            if last_h < h:
+                dt_start_interval = dt_loc + timedelta(hours=last_h)
+                day_str = dt_start_interval.strftime('%d/%m/%Y')
+                
+                if day_str not in intervals_by_day: intervals_by_day[day_str] = []
+                intervals_by_day[day_str].append((last_h, h))
+            last_h = h
+
+    req = ogd_api.Request("ogd-forecasting-icon-ch2", "HZEROCL", dt_utc, True, [f"P{l//24}DT{l%24}H" for l in range(1, 121)])
+    try:
+        print(f"  ⬇️  Scarico dati HZEROCL per le 120 ore...")
+        vm_data = scarica_variabile_con_retry(req)
+        print(f"  ✅ Dati scaricati con successo.")
+    except Exception as e:
+        print(f"  ❌ Errore nel download: {e}")
+        return
+
+    for day_str, intervals in intervals_by_day.items():
         fp = []
-        for h in ore:
+        for h_start, h_end in intervals:
+            hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
+            hzero_interval = vm_data.sel(lead_time=hours_slice).max(dim="lead_time").mean(dim="eps")
+            
             ch = earthkit.plots.Map(domain=dom)
-            ch.grid_cells(regrid.iconremap(vm.sel(lead_time=np.timedelta64(h, 'h')), dest), x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
+            ch.grid_cells(regrid.iconremap(hzero_interval, dest), x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
             ch.ax.add_feature(f_reg); ch.ax.add_feature(f_prov) if f_prov else ch.borders()
-            ch.title(f"ICON-CH2 EPS - Zero Termico (m MSL)\nRun: {dt_utc.strftime('%d/%m/%Y %H:%M UTC')} | Ore {(dt_loc + timedelta(hours=h)).strftime('%H:%M del %d/%m')}")
+            
+            start_local = dt_loc + timedelta(hours=h_start)
+            end_local = dt_loc + timedelta(hours=h_end)
+            orario_str = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M')}"
+            
+            ch.title(f"ICON-CH2 EPS - Zero Termico (m MSL) MAX (Media dei Massimi)\n{day_str} | Fascia {orario_str}\nRun: {dt_utc.strftime('%d/%m %H:%M UTC')}")
             ch.legend(label="HZEROCL (m)")
-            ch.save(f"h_{h}.png"); fp.append(f"h_{h}.png"); plt.close(ch.fig)
-        invia_album(fp, f"ICON-CH2 EPS: Dettaglio Zero Termico\n{bn}\nRun {n_run}")
-        [os.remove(f) for f in fp]; time.sleep(15)
+            
+            fname = f"h_max_{h_start}_{h_end}.png"
+            ch.save(fname); fp.append(fname); plt.close(ch.fig)
+            
+        invia_album(fp, f"ICON-CH2 EPS: Zero Termico MAX\nFasce triorarie del {day_str}\nRun {n_run}")
+        for f in fp:
+            if os.path.exists(f): os.remove(f)
+
+    del vm_data
 
 if __name__ == "__main__":
     d = next((requests.get("https://ensemble-api.open-meteo.com/v1/ensemble", params={"latitude":LATITUDE,"longitude":LONGITUDE,"hourly":"temperature_2m","models":"meteoswiss_icon_ch2_ensemble_mean","timezone":"Europe/Rome","past_days":1,"forecast_days":6}).json() for _ in range(3) if time.sleep(1) is None), {})
