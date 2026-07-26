@@ -123,21 +123,16 @@ def invia_album_telegram(file_paths: list, caption: str):
     if len(file_paths) == 1:
         url = f"https://api.telegram.org/bot{token}/sendPhoto"
         payload = {"chat_id": chat_id, "caption": caption}
-        
-        if thread_id:
-            payload["message_thread_id"] = thread_id
-            
+        if thread_id: payload["message_thread_id"] = thread_id
         try:
             with open(file_paths[0], "rb") as photo:
                 requests.post(url, data=payload, files={"photo": photo})
-        except Exception as e:
-            print(f"Errore invio singola foto: {e}")
+        except Exception as e: print(f"Errore invio: {e}")
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMediaGroup"
     media = []
     files = {}
-    
     for idx, path in enumerate(file_paths):
         media.append({
             "type": "photo",
@@ -147,39 +142,28 @@ def invia_album_telegram(file_paths: list, caption: str):
         files[f"photo_{idx}"] = open(path, "rb")
 
     payload = {"chat_id": chat_id, "media": json.dumps(media)}
-    if thread_id:
-        payload["message_thread_id"] = thread_id
+    if thread_id: payload["message_thread_id"] = thread_id
 
     try:
         requests.post(url, data=payload, files=files)
-        print(f"📸 Album Telegram inviato con successo ({len(file_paths)} mappe).")
-    except Exception as e:
-        print(f"Errore invio album Telegram: {e}")
+        print(f"📸 Album Updraft inviato ({len(file_paths)} mappe).")
+    except Exception as e: print(f"Errore invio: {e}")
     finally:
-        for f in files.values():
-            f.close()
+        for f in files.values(): f.close()
 
 def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
     blocchi = {}
-    
-    for h in range(1, 121):
+    for h in range(3, 121, 3):
         dt_target = dt_run_local + timedelta(hours=h)
-        date_str = dt_target.date().strftime("%Y-%m-%d")
-        hour = dt_target.hour
-        
-        if hour == 0:
-            date_str = (dt_target.date() - timedelta(days=1)).strftime("%Y-%m-%d")
-            b_name = "18-24"
-        elif 1 <= hour <= 6: b_name = "00-06"
-        elif 7 <= hour <= 12: b_name = "06-12"
-        elif 13 <= hour <= 18: b_name = "12-18"
-        else: b_name = "18-24"
+        if dt_target.hour == 0:
+            date_str = (dt_target.date() - timedelta(days=1)).strftime("%d/%m/%Y")
+        else:
+            date_str = dt_target.date().strftime("%d/%m/%Y")
             
-        key = f"{date_str} (Fascia {b_name})"
+        key = f"Data: {date_str}"
         if key not in blocchi:
             blocchi[key] = []
         blocchi[key].append(h)
-        
     return blocchi
 
 def genera_album_orari(dt_run_utc: datetime, nome_run: str):
@@ -214,7 +198,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         print(f"\nGenerazione album Updraft per {block_name}")
         percorsi_foto = []
 
-        # Estraiamo i campi ora per ora per evitare sovraccarichi in memoria su array 3D (80 livelli)
         for h in ore_list:
             lead_time_str = [f"P{h // 24}DT{h % 24}H"]
 
@@ -273,7 +256,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             time.sleep(15)
 
 def main():
-    print("Cerco l'ultimo run completo ICON-CH2 per Updraft (Fasce 6h, Media Scenari)...")
+    print("Cerco l'ultimo run completo ICON-CH2 per Updraft (Step 3h, Media Scenari)...")
     data = fetch_dati_con_retry()
     if not data: sys.exit(0)
         
