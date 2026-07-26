@@ -37,7 +37,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_THREAD_ID_22: ${{ secrets.TELEGRAM_THREAD_ID_22 }}
+          TELEGRAM_THREAD_ID_30: ${{ secrets.TELEGRAM_THREAD_ID_30 }}
         run: |
           cp icon_ch2_24h_hail_prob.py opendata-nwp-demos/
           cp -r shapefiles opendata-nwp-demos/ || echo "Attenzione: Cartella shapefiles non trovata"
