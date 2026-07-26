@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_thom.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -155,6 +165,7 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     intervals_by_day = {}
     last_h = 0
     
+    # Costruzione dei blocchi giornalieri
     for h in range(1, 121):
         dt_target = dt_run_local + timedelta(hours=h)
         if dt_target.hour % 3 == 0 or h == 120:
@@ -167,61 +178,16 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
                 intervals_by_day[day_str].append((last_h, h))
             last_h = h
 
-    lead_times_needed = list(range(1, 121))
-    lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
-
-    # Scarichiamo Temperatura (T_2M) e Dew Point (TD_2M)
-    req_t = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="T_2M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
-    req_td = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="TD_2M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
-    
-    try:
-        print(f"Scaricando i dati T_2M e TD_2M per le 120 ore...")
-        t_data = ogd_api.get_from_ogd(req_t)
-        td_data = ogd_api.get_from_ogd(req_td)
-    except Exception as e:
-        print(f"❌ Errore nel download: {e}")
-        return
-
-    # --- CALCOLO TERMODINAMICO VETTORIALIZZATO ---
-    # 1. Conversione in Celsius
-    t_c = t_data - 273.15
-    td_c = td_data - 273.15
-    
-    # 2. Formula di August-Roche-Magnus per l'Umidità Relativa (UR)
-    num_exp = np.exp((17.625 * td_c) / (243.04 + td_c))
-    den_exp = np.exp((17.625 * t_c) / (243.04 + t_c))
-    ur_data = 100 * (num_exp / den_exp)
-    
-    # 3. Indice di Thom (DI) calcolato su ogni griglia, ora e membro dell'ensemble
-    di_data = t_c - (0.55 - 0.0055 * ur_data) * (t_c - 14.5)
-    
-    # Liberiamo la memoria degli array intermedi
-    del t_data, td_data, t_c, td_c, num_exp, den_exp, ur_data
-
+    # Configurazione iniziale della mappa (fatta una volta sola fuori dal ciclo)
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # Definizione delle soglie del Disagio Termico (Scala Thom)
-    # < 21: Assente | 21-24: Lieve | 24-27: Moderato | 27-29: Marcato | 29-32: Forte | >= 32: Estremo
     my_levels = [0, 15, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 34, 36, 50]
     my_colors = [
-        "#ffffff", # 0-15 (Nessun dato di calore rilevante)
-        "#e6ffcc", # 15-21 (Assente)
-        "#ffffcc", # 21-22 (Lieve 1/3)
-        "#ffff99", # 22-23 (Lieve 2/3)
-        "#ffeb99", # 23-24 (Lieve 3/3)
-        "#ffd699", # 24-25 (Moderato 1/3)
-        "#ffb366", # 25-26 (Moderato 2/3)
-        "#ff9933", # 26-27 (Moderato 3/3)
-        "#ff6600", # 27-28 (Marcato 1/2)
-        "#e63900", # 28-29 (Marcato 2/2)
-        "#cc0000", # 29-30 (Forte 1/3)
-        "#990000", # 30-31 (Forte 2/3)
-        "#660000", # 31-32 (Forte 3/3)
-        "#800080", # 32-34 (Estremo 1/3)
-        "#b300b3", # 34-36 (Estremo 2/3)
-        "#e600e6"  # 36-50 (Estremo 3/3)
+        "#ffffff", "#e6ffcc", "#ffffcc", "#ffff99", "#ffeb99", "#ffd699", 
+        "#ffb366", "#ff9933", "#ff6600", "#e63900", "#cc0000", "#990000", 
+        "#660000", "#800080", "#b300b3", "#e600e6"  
     ]
     
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -236,17 +202,50 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
+    # --- CICLO SUI GIORNI: Download e calcolo frazionati ---
     for day_str, intervals in intervals_by_day.items():
+        
+        # 1. Trova le ore necessarie per scaricare solo questo giorno
+        hours_for_day = []
+        for h_start, h_end in intervals:
+            hours_for_day.extend(range(h_start + 1, h_end + 1))
+            
+        lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in hours_for_day]
+
+        req_t = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="T_2M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        req_td = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="TD_2M", ref_time=dt_run_utc, perturbed=True, lead_time=lead_times_str)
+        
+        try:
+            print(f"\n  ⬇️  Scarico dati T_2M e TD_2M per il {day_str} ({len(hours_for_day)} ore)...")
+            t_data = scarica_variabile_con_retry(req_t)
+            td_data = scarica_variabile_con_retry(req_td)
+            print(f"  ✅ Dati del {day_str} scaricati con successo.")
+        except Exception as e:
+            print(f"  ❌ Errore nel download del {day_str} dopo 3 tentativi: {e}")
+            continue # Passa al giorno successivo se fallisce
+
+        # 2. Calcolo termodinamico solo per il giorno in corso
+        t_c = t_data - 273.15
+        td_c = td_data - 273.15
+        
+        num_exp = np.exp((17.625 * td_c) / (243.04 + td_c))
+        den_exp = np.exp((17.625 * t_c) / (243.04 + t_c))
+        ur_data = 100 * (num_exp / den_exp)
+        
+        di_data = t_c - (0.55 - 0.0055 * ur_data) * (t_c - 14.5)
+        
+        # Libero la RAM dai dati grezzi
+        del t_data, td_data, t_c, td_c, num_exp, den_exp, ur_data
+
         percorsi_foto = []
         
+        # 3. Generazione Mappe per le fasce triorarie
         for h_start, h_end in intervals:
             hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
             
-            # Calcolo della media dell'Indice di Thom sia temporale (3 ore) che d'ensemble (eps)
             di_3h_mean = di_data.sel(lead_time=hours_slice).mean(dim=["lead_time", "eps"])
 
             di_geo = regrid.iconremap(di_3h_mean, destination)
-            # Filtro per ripulire visivamente le zone senza disagio o fredde (indice < 15)
             di_geo = di_geo.where(di_geo >= 15)
 
             chart = earthkit.plots.Map(domain=domain)
@@ -279,13 +278,17 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
             
             plt.close(chart.fig)
         
-        caption_album = f"🥵 ICON-CH2 EPS: Indice di Thom (Disagio da Caldo)\nFasce triorarie del {day_str}\nRun {nome_run}"
+        # Invia l'album del singolo giorno su Telegram
+        caption_album = f"ICON-CH2 EPS: Indice di Thom (Disagio da Caldo)\nFasce triorarie del {day_str}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
         
+        # Pulizia post-invio
         for f in percorsi_foto:
             if os.path.exists(f): os.remove(f)
 
-    del di_data
+        # Svuota il dataset giornaliero prima di passare al prossimo loop
+        del di_data
+        time.sleep(5) # Piccola pausa per far respirare le API
 
 def main():
     print("Cerco l'ultimo run completo ICON-CH2 via Open-Meteo per l'Indice di Thom...")
