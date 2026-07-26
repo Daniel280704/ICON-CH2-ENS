@@ -35,6 +35,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_lr75.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -166,17 +176,10 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     nx, ny = 300, 300
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), nx, ny, xmin, xmax, ymin, ymax)
 
-    # --- NUOVA SCALA COLORI: DA VERDI A BLU/VIOLA ---
     my_levels = [4.0, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 9.0]
     my_colors = [
-        "#228b22", # 4.0 - 5.0: Verde scuro (Stabilità assoluta)
-        "#3cb371", # 5.0 - 5.5: Verde medio
-        "#a0e6a0", # 5.5 - 6.0: Verde chiaro (Transizione)
-        "#add8e6", # 6.0 - 6.5: Azzurrino (Instabilità debole)
-        "#44aaff", # 6.5 - 7.0: Azzurro (Instabilità moderata)
-        "#0000ff", # 7.0 - 7.5: Blu (Instabilità marcata)
-        "#000080", # 7.5 - 8.0: Blu scuro/Navy (Forte instabilità)
-        "#800080"  # 8.0 - 9.0: Viola (Instabilità estrema)
+        "#228b22", "#3cb371", "#a0e6a0", "#add8e6", 
+        "#44aaff", "#0000ff", "#000080", "#800080"
     ]
     
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -196,21 +199,22 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         percorsi_foto = []
 
         for h in ore_list:
-            print(f"Scaricamento e calcolo Lapse Rate ensemble per l'ora +{h}...")
             lead_time_str = [f"P{h // 24}DT{h % 24}H"]
 
             req_p = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="P", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
             req_t = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="T", ref_time=dt_run_utc, perturbed=True, lead_time=lead_time_str)
             
             try:
-                data_p = ogd_api.get_from_ogd(req_p).mean(dim="eps")
-                data_t = ogd_api.get_from_ogd(req_t).mean(dim="eps")
+                print(f"  ⬇️  Scarico dati P, T per l'ora {h}...")
+                data_p = scarica_variabile_con_retry(req_p).mean(dim="eps")
+                data_t = scarica_variabile_con_retry(req_t).mean(dim="eps")
+                print(f"  ✅ Dati scaricati: ora {h}")
                 
                 t_500 = interpolate_k2p(field=data_t, mode="linear_in_lnp", p_field=data_p, p_tc_values=[500], p_tc_units="hPa")
                 t_700 = interpolate_k2p(field=data_t, mode="linear_in_lnp", p_field=data_p, p_tc_values=[700], p_tc_units="hPa")
 
             except Exception as e:
-                print(f"Salto l'ora {h} causa errore: {e}")
+                print(f"  ❌ Salto l'ora {h} dopo 3 tentativi. Errore: {e}")
                 continue
 
             t_500_geo = regrid.iconremap(t_500.squeeze(drop=True), destination)
