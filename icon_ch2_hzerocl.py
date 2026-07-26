@@ -10,6 +10,16 @@ warnings.filterwarnings('ignore'); urllib3.disable_warnings(); config.set("cache
 
 LATITUDE, LONGITUDE, FILE_LAST_HOUR = 45.07, 7.54, "ultima_ora_icon_ch2_hzerocl.txt"
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data, ref_param, utc_offset_sec):
     times, mean_vals = hourly_data.get("time", []), hourly_data.get(ref_param, [])
     if not times or not mean_vals: return False, "", None
@@ -52,8 +62,16 @@ def genera(dt_utc, n_run):
     my_colors = ["#313695", "#4575b4", "#74add1", "#abd9e9", "#e0f3f8", "#fee090", "#fdae61", "#f46d43", "#d73027", "#a50026", "#67001f", "#3d0012"]
 
     for bn, ore in raggruppa(dt_loc).items():
-        try: vm = ogd_api.get_from_ogd(ogd_api.Request("ogd-forecasting-icon-ch2", "HZEROCL", dt_utc, True, [f"P{l//24}DT{l%24}H" for l in ore])).mean(dim="eps")
-        except: continue
+        req = ogd_api.Request("ogd-forecasting-icon-ch2", "HZEROCL", dt_utc, True, [f"P{l//24}DT{l%24}H" for l in ore])
+        try:
+            print(f"  ⬇️  Scarico dati HZEROCL per {len(ore)} ore...")
+            vm_raw = scarica_variabile_con_retry(req)
+            vm = vm_raw.mean(dim="eps")
+            print(f"  ✅ Dati scaricati: {len(ore)} ore")
+        except Exception as e:
+            print(f"  ❌ Salto il blocco {bn} dopo 3 tentativi. Errore: {e}")
+            continue
+            
         fp = []
         for h in ore:
             ch = earthkit.plots.Map(domain=dom)
