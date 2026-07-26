@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_stac.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -218,10 +228,12 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         )
         
         try:
-            tot_prec = ogd_api.get_from_ogd(req)
+            print(f"  ⬇️  Scarico dati TOT_PREC per {len(lead_times_needed)} ore...")
+            tot_prec = scarica_variabile_con_retry(req)
             prec_mean = tot_prec.mean(dim="eps")
+            print(f"  ✅ Dati scaricati: {len(lead_times_needed)} ore")
         except Exception as e:
-            print(f"Salto il blocco {block_name} causa errore download: {e}")
+            print(f"  ❌ Salto il blocco {block_name} dopo 3 tentativi. Errore: {e}")
             continue
 
         percorsi_foto = []
