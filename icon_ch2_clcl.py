@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_clcl.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -138,7 +148,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     destination = regrid.RegularGrid(CRS.from_string("epsg:4326"), 300, 300, xmin, xmax, ymin, ymax)
 
-    # Scala da cielo sereno (azzurro scuro) a coperto (grigio denso)
     my_levels = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     my_colors = ["#4292c6", "#6baed6", "#9ecae1", "#c6dbef", "#deebf7", "#f0f0f0", "#d9d9d9", "#bdbdbd", "#969696", "#737373"]
     domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
@@ -150,8 +159,14 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
     for block_name, ore_list in blocchi.items():
         req = ogd_api.Request(collection="ogd-forecasting-icon-ch2", variable="CLCL", ref_time=dt_run_utc, perturbed=True, lead_time=[f"P{l // 24}DT{l % 24}H" for l in ore_list])
-        try: var_mean = ogd_api.get_from_ogd(req).mean(dim="eps")
-        except: continue
+        try:
+            print(f"  ⬇️  Scarico dati CLCL per {len(ore_list)} ore...")
+            var_raw = scarica_variabile_con_retry(req)
+            var_mean = var_raw.mean(dim="eps")
+            print(f"  ✅ Dati scaricati: {len(ore_list)} ore")
+        except Exception as e:
+            print(f"  ❌ Salto il blocco {block_name} dopo 3 tentativi. Errore: {e}")
+            continue
 
         percorsi_foto = []
         for h in ore_list:
