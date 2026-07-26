@@ -35,31 +35,22 @@ RUN_DURATION = 120
 START_DELAY = 1
 
 def scarica_variabile_con_retry(request, max_retries=6):
-    """Tenta lo scaricamento fino a max_retries, svuotando la cache in caso di fallimento."""
     for tentativo in range(max_retries):
         try:
             if tentativo > 0:
                 print(f"    🔄 Retry {tentativo + 1}/{max_retries} in corso...")
-            
-            # Tenta il download vero e proprio
             return ogd_api.get_from_ogd(request)
-            
         except Exception as e:
             if tentativo == max_retries - 1:
                 print(f"    💥 Fallimento definitivo dopo {max_retries} tentativi.")
                 raise e
-            
-            # Pausa progressiva (10s, 20s, 30s...) per far sbloccare il server
             delay = 10 * (tentativo + 1)
             print(f"    ⚠️ Errore o blocco di rete: {e}")
             print(f"    🧹 Svuoto la cache corrotta e attendo {delay}s...")
-            
-            # FORZATURA: Svuota la cache di earthkit per eliminare i file a metà
             try:
                 earthkit.data.cache.purge()
             except Exception:
                 pass
-                
             time.sleep(delay)
 
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
@@ -155,31 +146,43 @@ def invia_album_telegram(file_paths: list, caption: str):
     finally:
         for f in files.values(): f.close()
 
-def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
-    blocchi = {}
-    for h in range(1, 121):
-        dt_target = dt_run_local + timedelta(hours=h)
-        date_str = dt_target.date().strftime("%Y-%m-%d")
-        hour = dt_target.hour
-        
-        if hour == 0:
-            date_str = (dt_target.date() - timedelta(days=1)).strftime("%Y-%m-%d")
-            b_name = "18-24"
-        elif 1 <= hour <= 6: b_name = "00-06"
-        elif 7 <= hour <= 12: b_name = "06-12"
-        elif 13 <= hour <= 18: b_name = "12-18"
-        else: b_name = "18-24"
-            
-        key = f"{date_str} (Fascia {b_name})"
-        if key not in blocchi: blocchi[key] = []
-        blocchi[key].append(h)
-    return blocchi
-
 def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     rome_tz = pytz.timezone("Europe/Rome")
     dt_run_local = dt_run_utc.astimezone(rome_tz)
     
-    blocchi = raggruppa_in_blocchi(dt_run_local)
+    intervals_by_day = {}
+    last_h = 0
+    
+    for h in range(1, 121):
+        dt_target = dt_run_local + timedelta(hours=h)
+        if dt_target.hour % 3 == 0 or h == 120:
+            if last_h < h:
+                dt_start_interval = dt_run_local + timedelta(hours=last_h)
+                day_str = dt_start_interval.strftime('%d/%m/%Y')
+                
+                if day_str not in intervals_by_day:
+                    intervals_by_day[day_str] = []
+                intervals_by_day[day_str].append((last_h, h))
+            last_h = h
+
+    lead_times_needed = list(range(1, 121))
+    lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in lead_times_needed]
+
+    req = ogd_api.Request(
+        collection="ogd-forecasting-icon-ch2",
+        variable="SLI",
+        ref_time=dt_run_utc,
+        perturbed=True,
+        lead_time=lead_times_str,
+    )
+    
+    try:
+        print(f"  ⬇️  Scarico dati SLI per le 120 ore...")
+        var_data = scarica_variabile_con_retry(req)
+        print(f"  ✅ Dati scaricati con successo.")
+    except Exception as e:
+        print(f"  ❌ Errore nel download: {e}")
+        return
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     nx, ny = 300, 300
@@ -199,31 +202,15 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     lons = [7.68,  7.55,  8.20,  8.61,  8.42,  8.61,  8.05,  8.55]
     sigle = ["TO", "CN", "AT", "AL", "VC", "NO", "BI", "VB"]
 
-    for block_name, ore_list in blocchi.items():
-        lead_times_str = [f"P{l // 24}DT{l % 24}H" for l in ore_list]
-
-        req = ogd_api.Request(
-            collection="ogd-forecasting-icon-ch2",
-            variable="SLI",
-            ref_time=dt_run_utc,
-            perturbed=True,
-            lead_time=lead_times_str,
-        )
-        
-        try:
-            print(f"  ⬇️  Scarico dati SLI per {len(ore_list)} ore...")
-            var_data = scarica_variabile_con_retry(req)
-            var_mean = var_data.mean(dim="eps")
-            print(f"  ✅ Dati scaricati: {len(ore_list)} ore")
-        except Exception as e:
-            print(f"  ❌ Salto il blocco {block_name} dopo 3 tentativi. Errore: {e}")
-            continue
-
+    for day_str, intervals in intervals_by_day.items():
         percorsi_foto = []
         
-        for h in ore_list:
-            var_h = var_mean.sel(lead_time=np.timedelta64(h, 'h'))
-            var_geo = regrid.iconremap(var_h, destination)
+        for h_start, h_end in intervals:
+            hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
+            
+            var_interval = var_data.sel(lead_time=hours_slice).max(dim="lead_time").mean(dim="eps")
+
+            var_geo = regrid.iconremap(var_interval, destination)
 
             chart = earthkit.plots.Map(domain=domain)
             chart.grid_cells(var_geo, x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
@@ -237,24 +224,28 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
                 chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
                 chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
 
-            target_local = dt_run_local + timedelta(hours=h)
-            str_valida = f"Ore {target_local.strftime('%H:%M del %d/%m')}"
-
-            title = f"ICON-CH2 EPS - Surface Lifted Index (K)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
+            start_local = dt_run_local + timedelta(hours=h_start)
+            end_local = dt_run_local + timedelta(hours=h_end)
+            
+            orario_str = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M')}"
+            title = f"ICON-CH2 EPS - Surface Lifted Index (K) MAX (Media dei Massimi)\n{day_str} | Fascia {orario_str}\nRun: {dt_run_utc.strftime('%d/%m %H:%M UTC')}"
+            
             chart.title(title)
             chart.legend(label="SLI (K)")
 
-            filename = f"oraria_{h}.png"
+            filename = f"sli_max_{h_start}_{h_end}.png"
             chart.save(filename)
             percorsi_foto.append(filename)
+            
             plt.close(chart.fig)
         
-        caption_album = f"ICON-CH2 EPS: Dettaglio Surface Lifted Index\n{block_name}\nRun {nome_run}"
+        caption_album = f"ICON-CH2 EPS: Surface Lifted Index MAX\nFasce triorarie del {day_str}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
+        
         for f in percorsi_foto:
             if os.path.exists(f): os.remove(f)
-        del var_data, var_mean
-        time.sleep(15)
+
+    del var_data
 
 def main():
     data = fetch_dati_con_retry()
