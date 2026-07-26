@@ -2,7 +2,7 @@ name: Grandine Max 24h
 
 on:
   schedule:
-    - cron: '18 * * * *' # Sfalsato di 5 minuti rispetto alle piogge per non accavallare i runner
+    - cron: '05 * * * *' # Sfalsato di 5 minuti rispetto alle piogge per non accavallare i runner
   workflow_dispatch:
 
 jobs:
