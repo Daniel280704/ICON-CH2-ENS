@@ -2,7 +2,7 @@ name: Probabilità Graupel Oraria
 
 on:
   schedule:
-    - cron: '19 * * * *' 
+    - cron: '25 * * * *' 
   workflow_dispatch:
 
 jobs:
