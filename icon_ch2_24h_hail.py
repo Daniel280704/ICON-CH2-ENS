@@ -33,6 +33,16 @@ FILE_LAST_HOUR = "ultima_ora_icon_ch2_hail_24h.txt"
 RUN_DURATION = 120
 START_DELAY = 1
 
+def scarica_variabile_con_retry(request, max_retries=3, delay=5):
+    """Tenta lo scaricamento fino a max_retries prima di sollevare eccezione."""
+    for tentativo in range(max_retries):
+        try:
+            return ogd_api.get_from_ogd(request)
+        except Exception as e:
+            if tentativo == max_retries - 1:
+                raise e
+            time.sleep(delay)
+
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -179,13 +189,14 @@ def genera_album_giornalieri(dt_run_utc: datetime, nome_run: str):
     )
     
     try:
-        print(f"Scaricando i dati DHAIL_MX per le 120 ore...")
-        hail_data = ogd_api.get_from_ogd(req)
+        print(f"  ⬇️  Scarico dati DHAIL_MX per le 120 ore...")
+        hail_data = scarica_variabile_con_retry(req)
+        print(f"  ✅ Dati scaricati con successo.")
     except IndexError:
         print("❌ Errore: Variabile non trovata nel catalogo o ore mancanti per DHAIL_MX.")
         return
     except Exception as e:
-        print(f"❌ Errore nel download: {e}")
+        print(f"  ❌ Errore nel download dopo 3 tentativi: {e}")
         return
 
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
