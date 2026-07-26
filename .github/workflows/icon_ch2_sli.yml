@@ -2,7 +2,7 @@ name: Surface Lifted Index (SLI) orario
 
 on:
   schedule:
-    - cron: '33 * * * *'
+    - cron: '45 * * * *'
   workflow_dispatch:
 
 jobs:
