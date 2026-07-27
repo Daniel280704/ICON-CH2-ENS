@@ -17,21 +17,21 @@ def scarica_variabile_con_retry(request, max_retries=6):
         try:
             if tentativo > 0:
                 print(f"    🔄 Retry {tentativo + 1}/{max_retries} in corso...")
-            
+
             return ogd_api.get_from_ogd(request)
-            
+
         except Exception as e:
             if tentativo == max_retries - 1:
                 print(f"    💥 Fallimento definitivo dopo {max_retries} tentativi.")
                 raise e
-            
+
             delay = 10 * (tentativo + 1)
             print(f"    ⚠️ Errore o blocco di rete: {e}")
             print(f"    🧹 Svuoto la cache corrotta e attendo {delay}s...")
-            
+
             try: earthkit.data.cache.purge()
             except Exception: pass
-                
+
             time.sleep(delay)
 
 def estrai_limiti_run(hourly_data, ref_param, utc_offset_sec):
@@ -67,14 +67,14 @@ def genera(dt_utc, n_run):
 
     intervals_by_day = {}
     last_h = 0
-    
+
     for h in range(1, 121):
         dt_target = dt_loc + timedelta(hours=h)
-        if dt_target.hour % 3 == 0 or h == 120:
+        if dt_target.hour % 6 == 0 or h == 120:
             if last_h < h:
                 dt_start_interval = dt_loc + timedelta(hours=last_h)
                 day_str = dt_start_interval.strftime('%d/%m/%Y')
-                
+
                 if day_str not in intervals_by_day: intervals_by_day[day_str] = []
                 intervals_by_day[day_str].append((last_h, h))
             last_h = h
@@ -93,22 +93,22 @@ def genera(dt_utc, n_run):
         for h_start, h_end in intervals:
             hours_slice = [np.timedelta64(h, 'h') for h in range(h_start + 1, h_end + 1)]
             hzero_interval = vm_data.sel(lead_time=hours_slice).max(dim="lead_time").mean(dim="eps")
-            
+
             ch = earthkit.plots.Map(domain=dom)
             ch.grid_cells(regrid.iconremap(hzero_interval, dest), x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
             ch.ax.add_feature(f_reg); ch.ax.add_feature(f_prov) if f_prov else ch.borders()
-            
+
             start_local = dt_loc + timedelta(hours=h_start)
             end_local = dt_loc + timedelta(hours=h_end)
             orario_str = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M')}"
-            
+
             ch.title(f"ICON-CH2 EPS - Zero Termico (m MSL) MAX (Media dei Massimi)\n{day_str} | Fascia {orario_str}\nRun: {dt_utc.strftime('%d/%m %H:%M UTC')}")
             ch.legend(label="HZEROCL (m)")
-            
+
             fname = f"h_max_{h_start}_{h_end}.png"
             ch.save(fname); fp.append(fname); plt.close(ch.fig)
-            
-        invia_album(fp, f"ICON-CH2 EPS: Zero Termico MAX\nFasce triorarie del {day_str}\nRun {n_run}")
+
+        invia_album(fp, f"ICON-CH2 EPS: Zero Termico MAX\nFasce da 6 ore del {day_str}\nRun {n_run}")
         for f in fp:
             if os.path.exists(f): os.remove(f)
 
