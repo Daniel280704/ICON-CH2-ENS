@@ -18,7 +18,6 @@ def scarica_variabile_con_retry(request, max_retries=6):
             if tentativo > 0:
                 print(f"    🔄 Retry {tentativo + 1}/{max_retries} in corso...")
 
-            # Tenta il download vero e proprio
             return ogd_api.get_from_ogd(request)
 
         except Exception as e:
@@ -26,12 +25,10 @@ def scarica_variabile_con_retry(request, max_retries=6):
                 print(f"    💥 Fallimento definitivo dopo {max_retries} tentativi.")
                 raise e
 
-            # Pausa progressiva (10s, 20s, 30s...) per far sbloccare il server
             delay = 10 * (tentativo + 1)
             print(f"    ⚠️ Errore o blocco di rete: {e}")
             print(f"    🧹 Svuoto la cache corrotta e attendo {delay}s...")
 
-            # FORZATURA: Svuota la cache di earthkit per eliminare i file a metà
             try:
                 earthkit.data.cache.purge()
             except Exception:
@@ -60,13 +57,60 @@ def invia_album(file_paths, caption):
     except: pass
     finally: [v.close() for v in f.values()]
 
-def raggruppa(dt_run):
+def get_sun_times():
+    """Scarica alba e tramonto esatti dei prossimi 7 giorni tramite Open-Meteo API"""
+    try:
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": LATITUDE,
+            "longitude": LONGITUDE,
+            "daily": "sunrise,sunset",
+            "timezone": "Europe/Rome",
+            "past_days": 1,
+            "forecast_days": 7
+        }
+        data = requests.get(url, params=params, timeout=10).json()
+        rome_tz = pytz.timezone("Europe/Rome")
+        sun_dict = {}
+        for i in range(len(data['daily']['time'])):
+            ds = data['daily']['time'][i]
+            sr = rome_tz.localize(datetime.fromisoformat(data['daily']['sunrise'][i]))
+            ss = rome_tz.localize(datetime.fromisoformat(data['daily']['sunset'][i]))
+            sun_dict[ds] = {'sunrise': sr, 'sunset': ss}
+        return sun_dict
+    except Exception as e:
+        print(f"    ⚠️ Impossibile ottenere dati alba/tramonto, userò le ore di luce standard. Errore: {e}")
+        return {}
+
+def raggruppa(dt_loc, sun_dict):
     b = {}
     for h in range(1, 121):
-        dt = dt_run + timedelta(hours=h); hr = dt.hour
+        dt_target = dt_loc + timedelta(hours=h)
+        dt_start = dt_target - timedelta(hours=1)
+        
+        # Consideriamo il punto medio dell'ora per decidere se tenerla o scartarla
+        midpoint = dt_start + timedelta(minutes=30)
+        date_str = midpoint.strftime("%Y-%m-%d")
+        
+        # Filtraggio Dinamico: Rimuove le prime 2h post-alba e le ultime 2h pre-tramonto
+        if date_str in sun_dict:
+            sr = sun_dict[date_str]['sunrise']
+            ss = sun_dict[date_str]['sunset']
+            valid_start = sr + timedelta(hours=2)
+            valid_end = ss - timedelta(hours=2)
+            
+            if not (valid_start <= midpoint <= valid_end):
+                continue
+        else:
+            # Fallback in caso di mancato download dei dati astronomici (ore 08-18)
+            if not (8 <= midpoint.hour < 18):
+                continue
+
+        hr = dt_target.hour
         nm = "18-24" if hr == 0 else "00-06" if 1<=hr<=6 else "06-12" if 7<=hr<=12 else "12-18" if 13<=hr<=18 else "18-24"
-        ds = (dt.date() - timedelta(days=1)).strftime("%Y-%m-%d") if hr == 0 else dt.date().strftime("%Y-%m-%d")
+        ds = (dt_target.date() - timedelta(days=1)).strftime("%Y-%m-%d") if hr == 0 else dt_target.date().strftime("%Y-%m-%d")
         b.setdefault(f"{ds} (Fascia {nm})", []).append(h)
+    
     return b
 
 def genera(dt_utc, n_run):
@@ -76,16 +120,23 @@ def genera(dt_utc, n_run):
     f_reg = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
     f_prov = cfeature.ShapelyFeature(shpreader.Reader("shapefiles/ProvCM01012026_WGS84.shp").geometries(), ccrs.PlateCarree(), edgecolor='black', facecolor='none', linewidth=0.5, linestyle=':') if os.path.exists("shapefiles/ProvCM01012026_WGS84.shp") else None
 
-    # Scala in minuti (diviso 60), dal grigio chiaro al sole brillante (giallo scuro/arancio)
     my_levels = [0, 5, 10, 20, 30, 40, 50, 60]
     my_colors = ["#e0e0e0", "#fff5cc", "#ffeb99", "#ffe066", "#ffd633", "#ffcc00", "#ff9900"]
 
-    for bn, ore in raggruppa(dt_loc).items():
-        # Calcolando la differenza, dobbiamo richiedere anche h-1
+    print("☀️ Calcolo ore di luce dinamiche in corso...")
+    sun_dict = get_sun_times()
+
+    blocchi = raggruppa(dt_loc, sun_dict)
+    
+    if not blocchi:
+        print("☀️ Nessuna ora valida centrale trovata.")
+        return
+
+    for bn, ore in blocchi.items():
         need = list(ore); need.insert(0, ore[0] - 1) if ore[0] > 1 else None
         req = ogd_api.Request("ogd-forecasting-icon-ch2", "DURSUN", dt_utc, True, [f"P{l//24}DT{l%24}H" for l in need])
         try:
-            print(f"  ⬇️  Scarico dati DURSUN per {len(need)} ore...")
+            print(f"  ⬇️  Scarico dati DURSUN per {len(need)} ore centrali...")
             vm_raw = scarica_variabile_con_retry(req)
             vm = vm_raw.mean(dim="eps")
             print(f"  ✅ Dati scaricati: {len(need)} ore")
@@ -95,14 +146,10 @@ def genera(dt_utc, n_run):
 
         fp = []
         for h in ore:
-            # Calcolo accumulo orario e trasformazione secondi -> minuti
             if h == 1: diff_sec = vm.sel(lead_time=np.timedelta64(h, 'h'))
             else: diff_sec = vm.sel(lead_time=np.timedelta64(h, 'h')) - vm.sel(lead_time=np.timedelta64(h-1, 'h'))
-            
+
             diff_min = diff_sec / 60.0
-            
-            # MODIFICA: Utilizziamo np.clip solo sull'array '.values' per limitare forzatamente i valori tra 0 e 59.99.
-            # Questo impedisce la perdita dei metadati (metadata) necessari a meteodatalab per il regridding.
             diff_min.values = np.clip(diff_min.values, 0, 59.99)
 
             ch = earthkit.plots.Map(domain=dom)
@@ -115,7 +162,7 @@ def genera(dt_utc, n_run):
 
             ch.save(f"h_{h}.png"); fp.append(f"h_{h}.png"); plt.close(ch.fig)
 
-        invia_album(fp, f"ICON-CH2 EPS: Dettaglio Irraggiamento Solare\n{bn}\nRun {n_run}")
+        invia_album(fp, f"ICON-CH2 EPS: Irraggiamento Solare (Ore Centrali)\n{bn}\nRun {n_run}")
         [os.remove(f) for f in fp]; time.sleep(15)
 
 if __name__ == "__main__":
