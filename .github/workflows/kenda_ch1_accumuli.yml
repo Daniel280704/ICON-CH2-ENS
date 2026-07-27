@@ -3,7 +3,7 @@ name: KENDA-CH1 Archivio Orario e Mappe (24h/48h/72h)
 on:
   schedule:
     # Esegue ogni ora al minuto 15
-    - cron: '15 * * * *'
+    - cron: '15 */4 * * *'
   workflow_dispatch:
 
 jobs:
