@@ -99,10 +99,11 @@ def genera(dt_utc, n_run):
             if h == 1: diff_sec = vm.sel(lead_time=np.timedelta64(h, 'h'))
             else: diff_sec = vm.sel(lead_time=np.timedelta64(h, 'h')) - vm.sel(lead_time=np.timedelta64(h-1, 'h'))
             
-            # MODIFICA: Utilizziamo np.clip per limitare forzatamente i valori tra 0 e 59.99.
-            # Questo impedisce ai valori di sforare il tetto dei 60 minuti a causa del
-            # regridding/arrotondamenti, mantenendoli nel colore arancione senza toccare la legenda.
-            diff_min = np.clip(diff_sec / 60.0, 0, 59.99)
+            diff_min = diff_sec / 60.0
+            
+            # MODIFICA: Utilizziamo np.clip solo sull'array '.values' per limitare forzatamente i valori tra 0 e 59.99.
+            # Questo impedisce la perdita dei metadati (metadata) necessari a meteodatalab per il regridding.
+            diff_min.values = np.clip(diff_min.values, 0, 59.99)
 
             ch = earthkit.plots.Map(domain=dom)
             ch.grid_cells(regrid.iconremap(diff_min, dest), x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
