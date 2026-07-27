@@ -17,26 +17,26 @@ def scarica_variabile_con_retry(request, max_retries=6):
         try:
             if tentativo > 0:
                 print(f"    🔄 Retry {tentativo + 1}/{max_retries} in corso...")
-            
+
             # Tenta il download vero e proprio
             return ogd_api.get_from_ogd(request)
-            
+
         except Exception as e:
             if tentativo == max_retries - 1:
                 print(f"    💥 Fallimento definitivo dopo {max_retries} tentativi.")
                 raise e
-            
+
             # Pausa progressiva (10s, 20s, 30s...) per far sbloccare il server
             delay = 10 * (tentativo + 1)
             print(f"    ⚠️ Errore o blocco di rete: {e}")
             print(f"    🧹 Svuoto la cache corrotta e attendo {delay}s...")
-            
+
             # FORZATURA: Svuota la cache di earthkit per eliminare i file a metà
             try:
                 earthkit.data.cache.purge()
             except Exception:
                 pass
-                
+
             time.sleep(delay)
 
 def estrai_limiti_run(hourly_data, ref_param, utc_offset_sec):
@@ -92,24 +92,28 @@ def genera(dt_utc, n_run):
         except Exception as e:
             print(f"  ❌ Salto il blocco {bn} dopo 3 tentativi. Errore: {e}")
             continue
-        
+
         fp = []
         for h in ore:
             # Calcolo accumulo orario e trasformazione secondi -> minuti
             if h == 1: diff_sec = vm.sel(lead_time=np.timedelta64(h, 'h'))
             else: diff_sec = vm.sel(lead_time=np.timedelta64(h, 'h')) - vm.sel(lead_time=np.timedelta64(h-1, 'h'))
-            diff_min = diff_sec / 60.0
             
+            # MODIFICA: Utilizziamo np.clip per limitare forzatamente i valori tra 0 e 59.99.
+            # Questo impedisce ai valori di sforare il tetto dei 60 minuti a causa del
+            # regridding/arrotondamenti, mantenendoli nel colore arancione senza toccare la legenda.
+            diff_min = np.clip(diff_sec / 60.0, 0, 59.99)
+
             ch = earthkit.plots.Map(domain=dom)
             ch.grid_cells(regrid.iconremap(diff_min, dest), x="lon", y="lat", style=Style(colors=my_colors, levels=my_levels))
             ch.ax.add_feature(f_reg); ch.ax.add_feature(f_prov) if f_prov else ch.borders()
-            
+
             start_l, end_l = dt_loc + timedelta(hours=h-1), dt_loc + timedelta(hours=h)
             ch.title(f"ICON-CH2 EPS - Minuti di Sole orari (min/h)\nRun: {dt_utc.strftime('%d/%m/%Y %H:%M UTC')} | {start_l.strftime('%H:%M')} - {end_l.strftime('%H:%M del %d/%m')}")
             ch.legend(label="DURSUN (min)")
-            
+
             ch.save(f"h_{h}.png"); fp.append(f"h_{h}.png"); plt.close(ch.fig)
-            
+
         invia_album(fp, f"ICON-CH2 EPS: Dettaglio Irraggiamento Solare\n{bn}\nRun {n_run}")
         [os.remove(f) for f in fp]; time.sleep(15)
 
