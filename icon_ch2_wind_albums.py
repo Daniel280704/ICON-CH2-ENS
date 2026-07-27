@@ -294,7 +294,7 @@ def genera_album_wind(dt_run_utc: datetime, nome_run: str):
 
             plt.close(chart.fig)
 
-        caption_album = f"💨 ICON-CH2 EPS: Raffiche di Vento (Max nelle 3h)\nFasce triorarie del {day_str}\nRun {nome_run}"
+        caption_album = f"ICON-CH2 EPS: Raffiche di Vento (Max nelle 3h)\nFasce triorarie del {day_str}\nRun {nome_run}"
         invia_album_telegram(percorsi_foto, caption_album)
 
         for f in percorsi_foto:
