@@ -62,8 +62,16 @@ def genera(dt_utc, n_run):
     f_reg = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
     f_prov = cfeature.ShapelyFeature(shpreader.Reader("shapefiles/ProvCM01012026_WGS84.shp").geometries(), ccrs.PlateCarree(), edgecolor='black', facecolor='none', linewidth=0.5, linestyle=':') if os.path.exists("shapefiles/ProvCM01012026_WGS84.shp") else None
 
-    my_levels = [0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000]
-    my_colors = ["#313695", "#4575b4", "#74add1", "#abd9e9", "#e0f3f8", "#fee090", "#fdae61", "#f46d43", "#d73027", "#a50026", "#67001f", "#3d0012"]
+    # Nuovi livelli e colori aggiornati con step di 200m
+    my_levels = list(range(0, 6001, 200)) # Genera [0, 200, 400, ..., 6000] (31 livelli)
+    my_colors = [ # 30 colori sfumati per coprire i 30 intervalli creati dai 31 livelli
+        "#313695", "#374a9f", "#3d5ea9", "#4372b3", "#4c84be", 
+        "#5a97c9", "#68aad4", "#7ebce0", "#91cce9", "#a2daf1", 
+        "#b4e5f7", "#c6effb", "#d7f7fa", "#e8faf5", "#f5fad8", 
+        "#fdedb3", "#fde08f", "#fdd26d", "#fdc34e", "#fcb137", 
+        "#f8972b", "#f47b22", "#ef5c1c", "#e53b1b", "#d62025", 
+        "#c20b26", "#a80025", "#8e0023", "#70001f", "#520018"
+    ]
 
     intervals_by_day = {}
     last_h = 0
