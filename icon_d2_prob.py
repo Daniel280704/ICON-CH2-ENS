@@ -142,10 +142,12 @@ def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     ds_gsp = earthkit.data.from_source("file", p_gsp).to_xarray()
     ds_con = earthkit.data.from_source("file", p_con).to_xarray()
 
-    # Rinomina la dimensione ensemble ('member' per DWD EPS) in 'eps'
-    for ds_temp in (ds_gsp, ds_con):
-        if 'member' in ds_temp.dims: ds_temp = ds_temp.rename({'member': 'eps'})
-        elif 'number' in ds_temp.dims: ds_temp = ds_temp.rename({'number': 'eps'})
+    # Rinomina la dimensione ensemble esplicitamente per aggirare l'immutabilità
+    if 'member' in ds_gsp.dims: ds_gsp = ds_gsp.rename({'member': 'eps'})
+    elif 'number' in ds_gsp.dims: ds_gsp = ds_gsp.rename({'number': 'eps'})
+    
+    if 'member' in ds_con.dims: ds_con = ds_con.rename({'member': 'eps'})
+    elif 'number' in ds_con.dims: ds_con = ds_con.rename({'number': 'eps'})
 
     # Estrazione dinamica del nome variabile assegnato da eccodes
     gsp_var = list(ds_gsp.data_vars)[0]
@@ -163,7 +165,6 @@ def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     except: pass
 
     return tot_prec
-
 
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
