@@ -26,14 +26,93 @@ warnings.filterwarnings('ignore')
 urllib3.disable_warnings()
 config.set("cache-policy", "temporary")
 
+LATITUDE = 45.07
+LONGITUDE = 7.54
+
 FILE_LAST_HOUR = "ultima_ora_icond2_prob.txt" 
-RUN_DURATION = 48 # Esteso a 48h
-START_DELAY = 1
+RUN_DURATION = 48 
+START_DELAY = 0
+
+def fetch_dati_con_retry() -> dict:
+    """Usa Open-Meteo come sentinella per capire quando il run è davvero completo."""
+    URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
+    params = {
+        "latitude": LATITUDE,
+        "longitude": LONGITUDE,
+        "hourly": "temperature_2m", # Ci basta un parametro per capire a che punto è il run
+        "models": "dwd_icon_d2_eps_ensemble_mean",
+        "timezone": "Europe/Rome",
+        "past_days": 1,
+        "forecast_days": 3 
+    }
+    headers = {"User-Agent": "MeteoBot-ICOND2-Mappe/3.0"}
+    for tentativo in range(3):
+        try:
+            r = requests.get(URL, params=params, headers=headers, timeout=30)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            print(f"⚠️ Errore API Open-Meteo: {e}")
+            time.sleep(15)
+    return {}
+
+def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
+    times = hourly_data.get("time", [])
+    mean_vals = hourly_data.get(ref_param, [])
+
+    if not times or not mean_vals: return False, "", None
+
+    # Cerca l'ultimo valore non nullo
+    end_idx = -1
+    for i in range(len(mean_vals) - 1, -1, -1):
+        if mean_vals[i] is not None:
+            end_idx = i
+            break
+
+    if end_idx == -1: return False, "", None
+
+    ultima_ora_valida_str = times[end_idx]
+
+    dt_end_local = datetime.fromisoformat(ultima_ora_valida_str)
+    dt_end_utc = dt_end_local - timedelta(seconds=utc_offset_sec)
+    dt_run_utc_naive = dt_end_utc - timedelta(hours=RUN_DURATION)
+    dt_start_utc = dt_run_utc_naive + timedelta(hours=START_DELAY)
+
+    dt_start_local = dt_start_utc + timedelta(seconds=utc_offset_sec)
+    start_time_str = dt_start_local.strftime("%Y-%m-%dT%H:%M")
+    nome_run = dt_run_utc_naive.strftime("%H") + "Z"
+
+    try:
+        start_idx = times.index(start_time_str)
+    except ValueError:
+        return False, "", None
+
+    expected_points = RUN_DURATION - START_DELAY + 1
+    actual_points = end_idx - start_idx + 1
+
+    # Se Open-Meteo non ha ancora caricato tutte le 48 ore
+    if actual_points < expected_points:
+        print(f"⏳ Run {nome_run} in caricamento su Open-Meteo... ({actual_points}/{expected_points} ore)")
+        return False, "", None
+
+    # Controllo se l'abbiamo già processato
+    if os.path.exists(FILE_LAST_HOUR):
+        with open(FILE_LAST_HOUR, "r") as f:
+            ultima_ora_salvata = f.read().strip()
+        if ultima_ora_valida_str <= ultima_ora_salvata:
+            print(f"✅ Run ICON-D2 EPS {nome_run} già elaborato (Ultimo blocco: {ultima_ora_valida_str}).")
+            return False, "", None
+
+    # Salvataggio del nuovo stato
+    with open(FILE_LAST_HOUR, "w") as f:
+        f.write(ultima_ora_valida_str)
+
+    dt_run_utc = dt_run_utc_naive.replace(tzinfo=timezone.utc)
+    return True, nome_run, dt_run_utc
 
 def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
     """
-    Scarica rain_gsp e rain_con dal server DWD OpenData, decomprime i .bz2 in GRIB2 temporanei
-    e li carica in due Dataset xarray separati.
+    Scarica rain_gsp e rain_con dal server DWD OpenData usando l'orario fornito da Open-Meteo.
     """
     run_hour_syn = dt_run_utc.hour          
     run_hour = f"{run_hour_syn:02d}"
@@ -60,10 +139,9 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
                 time.sleep(10 * (tentativo + 1))
 
     for h in ore_list:
-        step_idx = max(0, h - 1)   # h=1 -> 000, h=2 -> 001, ...
+        step_idx = max(0, h - 1)   
         step_str = f"{step_idx:03d}"
         
-        # Prefisso corretto: icon-d2-eps_
         url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
         url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
 
@@ -90,54 +168,6 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
         ds_con = ds_con.rename({'number': 'eps'})
 
     return ds_gsp, ds_con, (tmp_gsp + tmp_con)
-
-def get_latest_dwd_run():
-    """
-    Calcola l'ultimo run ICON-D2 EPS verificandolo direttamente sul server DWD.
-    Gestisce i run ogni 3 ore (00, 03, 06, 09, 12, 15, 18, 21).
-    """
-    now = datetime.now(timezone.utc)
-    # I file escono con circa 1.5 - 2 ore di ritardo. Usiamo 2.5 ore di margine di sicurezza.
-    dt_safe = now - timedelta(hours=2, minutes=30)
-    
-    # Arrotondamento ai blocchi di 3 ore
-    run_hour_syn = (dt_safe.hour // 3) * 3  
-    dt_run = dt_safe.replace(hour=run_hour_syn, minute=0, second=0, microsecond=0)
-
-    for attempt in range(3):
-        date_hour = dt_run.strftime('%Y%m%d%H')
-        run_hour_str = f"{dt_run.hour:02d}"
-
-        # Testiamo lo step 000 con il nome corretto
-        url_test = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour_str}/rain_gsp/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_000_2d_rain_gsp.grib2.bz2"
-        print(f"  🔍 Controllo server DWD per run {run_hour_str}Z...")
-
-        try:
-            r = requests.head(url_test, timeout=10)
-            if r.status_code == 200:
-                print(f"  🟢 File trovato! Il run {run_hour_str}Z è online.")
-                nome_run = dt_run.strftime("%H") + "Z"
-
-                if os.path.exists(FILE_LAST_HOUR):
-                    with open(FILE_LAST_HOUR, "r") as f:
-                        ultimo_salvato = f.read().strip()
-                    if date_hour <= ultimo_salvato:
-                        print(f"  ✅ Run ICON-D2 EPS {nome_run} già elaborato in precedenza (Ultimo in archivio: {ultimo_salvato}).")
-                        return False, "", None
-
-                with open(FILE_LAST_HOUR, "w") as f:
-                    f.write(date_hour)
-
-                return True, nome_run, dt_run
-            else:
-                print(f"  ⚠️ Run {run_hour_str}Z non ancora disponibile (Errore HTTP {r.status_code})")
-        except Exception as e:
-            print(f"  ❌ Errore di connessione testando {run_hour_str}Z: {e}")
-
-        # Se non è ancora online o dà 404, scaliamo al run di 3 ore prima
-        dt_run -= timedelta(hours=3)
-
-    return False, "", None
 
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
@@ -184,7 +214,7 @@ def invia_album_telegram(file_paths: list, caption: str):
 
 def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
     blocchi = {}
-    for h in range(1, 49): # Portato a 48h
+    for h in range(1, 49): 
         dt_target = dt_run_local + timedelta(hours=h)
         date_str = dt_target.date().strftime("%Y-%m-%d")
         hour = dt_target.hour
@@ -289,14 +319,22 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         time.sleep(15)
 
 def main():
-    print("Cerco l'ultimo run completo ICON-D2 EPS direttamente sul server DWD...")
-    is_new, nome_run, dt_run_utc = get_latest_dwd_run()
+    print("Cerco l'ultimo run completo ICON-D2 EPS tramite la sentinella Open-Meteo...")
+    data = fetch_dati_con_retry()
+    
+    if not data: 
+        sys.exit(0)
+        
+    hourly = data.get("hourly", {})
+    utc_offset = data.get("utc_offset_seconds", 0)
+    
+    is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m", utc_offset)
 
     if is_new:
         print(f"🚀 Lancio generazione Probabilità Orarie ICON-D2 per il RUN {nome_run} ({dt_run_utc.strftime('%Y-%m-%d %H:%M')})")
         genera_album_orari(dt_run_utc, nome_run)
     else:
-        print("Nessun nuovo run trovato. Uscita.")
+        print("Nessun nuovo run trovato o run in fase di caricamento. Uscita.")
 
 if __name__ == "__main__":
     main()
