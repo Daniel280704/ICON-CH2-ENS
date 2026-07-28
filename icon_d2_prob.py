@@ -32,47 +32,70 @@ FILE_LAST_HOUR = "ultima_ora_icond2_prob.txt"
 RUN_DURATION = 27 # ICON-D2 si ferma a 27h
 START_DELAY = 1
 
-def scarica_variabile_icon_d2(dt_run_utc, ore_list, max_retries=3):
-    """Scarica i file .bz2 dal server DWD OpenData, li decomprime in GRIB2 e li carica in xarray."""
+def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
+    """
+    Scarica rain_gsp e rain_con dal server DWD OpenData, decomprime i .bz2 in GRIB2 temporanei
+    e li carica in due Dataset xarray separati.
+    """
     run_hour = dt_run_utc.strftime('%H')
     date_hour = dt_run_utc.strftime('%Y%m%d%H')
-    
-    file_temporanei = []
-    
-    for h in ore_list:
-        step_str = f"{h:03d}"
-        url = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/tot_prec/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_tot_prec.grib2.bz2"
-        
+
+    tmp_gsp = []
+    tmp_con = []
+
+    def _download_one(url: str, max_retries: int):
         for tentativo in range(max_retries):
             try:
                 r = requests.get(url, stream=True, timeout=30)
                 r.raise_for_status()
-                
-                # Decomprimo il bz2 on the fly e scrivo un GRIB2 temporaneo
+
                 fd, temp_path = tempfile.mkstemp(suffix=".grib2")
                 with os.fdopen(fd, 'wb') as f_out:
                     decompressor = bz2.BZ2Decompressor()
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             f_out.write(decompressor.decompress(chunk))
-                
-                file_temporanei.append(temp_path)
-                break
+                return temp_path
             except Exception as e:
                 if tentativo == max_retries - 1:
-                    print(f"    💥 Fallimento definitivo per ora {h} dopo {max_retries} tentativi: {e}")
                     raise e
                 time.sleep(10 * (tentativo + 1))
-                
-    # Carico tutti i grib temporanei in un unico Dataset xarray
-    ds = earthkit.data.from_source("file", file_temporanei).to_xarray()
-    
-    # Rinomino la dimensione dei membri per uniformità se necessario (cfgrib usa 'number')
-    if 'number' in ds.dims:
-        ds = ds.rename({'number': 'eps'})
-        
-    return ds, file_temporanei
 
+    for h in ore_list:
+        step_str = f"{h:03d}"
+
+        url_gsp = (
+            f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/"
+            f"icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
+        )
+        url_con = (
+            f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/"
+            f"icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
+        )
+
+        try:
+            p_gsp = _download_one(url_gsp, max_retries)
+            tmp_gsp.append(p_gsp)
+        except Exception as e:
+            print(f"    💥 Fallimento definitivo rain_gsp ora {h}: {e}")
+            raise
+
+        try:
+            p_con = _download_one(url_con, max_retries)
+            tmp_con.append(p_con)
+        except Exception as e:
+            print(f"    💥 Fallimento definitivo rain_con ora {h}: {e}")
+            raise
+
+    ds_gsp = earthkit.data.from_source("file", tmp_gsp).to_xarray()
+    ds_con = earthkit.data.from_source("file", tmp_con).to_xarray()
+
+    if 'number' in ds_gsp.dims:
+        ds_gsp = ds_gsp.rename({'number': 'eps'})
+    if 'number' in ds_con.dims:
+        ds_con = ds_con.rename({'number': 'eps'})
+
+    return ds_gsp, ds_con, (tmp_gsp + tmp_con)
 def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
     times = hourly_data.get("time", [])
     mean_vals = hourly_data.get(ref_param, [])
@@ -234,8 +257,8 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             lead_times_needed.insert(0, ore_list[0] - 1)
 
         try:
-            print(f"  ⬇️  Scarico dati TOT_PREC dal DWD per {len(lead_times_needed)} ore...")
-            tot_prec_xr, tmp_files = scarica_variabile_icon_d2(dt_run_utc, lead_times_needed)
+            print(f"  ⬇️  Scarico dati RAIN_GSP + RAIN_CON dal DWD per {len(lead_times_needed)} ore...")
+            rain_gsp_xr, rain_con_xr, tmp_files = scarica_pioggia_icon_d2(dt_run_utc, lead_times_needed)
             print(f"  ✅ Dati scaricati e decodificati.")
         except Exception as e:
             print(f"  ❌ Salto il blocco {block_name}. Errore: {e}")
@@ -248,10 +271,9 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             step_prev_timedelta = np.timedelta64(h-1, 'h')
             
             try:
-                if h == 1:
-                    prec_diff = tot_prec_xr.sel(step=step_timedelta).tot_prec
-                else:
-                    prec_diff = tot_prec_xr.sel(step=step_timedelta).tot_prec - tot_prec_xr.sel(step=step_prev_timedelta).tot_prec
+               gsp_now = rain_gsp_xr.sel(step=step_timedelta).rain_gsp
+               con_now = rain_con_xr.sel(step=step_timedelta).rain_con
+               prec_diff = gsp_now + con_now
             except KeyError:
                 print(f"Ora {h} non trovata, salto.")
                 continue
@@ -291,7 +313,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
         for f in percorsi_foto + tmp_files:
             if os.path.exists(f): os.remove(f)
-        del tot_prec_xr
+        del rain_gsp_xr, rain_con_xr
         time.sleep(15)
 
 def main():
