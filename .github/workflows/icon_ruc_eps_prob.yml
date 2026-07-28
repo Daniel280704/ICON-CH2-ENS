@@ -1,0 +1,56 @@
+name: ICON-D2-RUC EPS Mappe Probabilità
+
+on:
+  schedule:
+    # Esegue lo script ogni ora, al minuto 35 (es: 00:35, 01:35, 02:35, ...)
+    - cron: '35 * * * *'
+  workflow_dispatch: # Permette l'avvio manuale dal pannello "Actions" di GitHub
+
+permissions:
+  contents: write # Necessario per fare il commit del file di testo aggiornato
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Installa dipendenze di sistema (ecCodes e Cartopy)
+        run: |
+          sudo apt-get update
+          # libeccodes0 è fondamentale affinché earthkit e xarray leggano i file GRIB
+          sudo apt-get install -y libeccodes0 libgeos-dev libproj-dev
+
+      - name: Installa dipendenze Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests numpy matplotlib cartopy xarray earthkit-data earthkit-plots pytz
+          # cfgrib/eccodes servono come backend engine per la lettura dei GRIB
+          pip install eccodes cfgrib
+
+      - name: Esegui Script ICON-D2-RUC
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_5685: ${{ secrets.TELEGRAM_THREAD_ID_5685 }}
+        # Assicurati che il nome del file qui sotto coincida con quello che hai nel repo!
+        run: python icon_ruc_eps_prob.py
+
+      - name: Salva stato ultimo RUN nel repository
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Bot"
+          # Aggiunge il file di testo che traccia l'ultimo run scaricato
+          git add ultima_ora_icon_ruc_eps_prob.txt
+          
+          # Fa il commit solo se il file è cambiato, altrimenti esce senza errore (exit 0)
+          git commit -m "🤖 Aggiornato ultimo run ICON-RUC EPS" || exit 0
+          git push
