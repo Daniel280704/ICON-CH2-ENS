@@ -62,7 +62,6 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
 
     if not times or not mean_vals: return False, "", None
 
-    # Cerca l'ultimo valore non nullo
     end_idx = -1
     for i in range(len(mean_vals) - 1, -1, -1):
         if mean_vals[i] is not None:
@@ -90,12 +89,10 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
     expected_points = RUN_DURATION - START_DELAY + 1
     actual_points = end_idx - start_idx + 1
 
-    # Se Open-Meteo non ha ancora caricato tutte le 48 ore
     if actual_points < expected_points:
         print(f"⏳ Run {nome_run} in caricamento su Open-Meteo... ({actual_points}/{expected_points} ore)")
         return False, "", None
 
-    # Controllo se l'abbiamo già processato
     if os.path.exists(FILE_LAST_HOUR):
         with open(FILE_LAST_HOUR, "r") as f:
             ultima_ora_salvata = f.read().strip()
@@ -103,7 +100,6 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
             print(f"✅ Run ICON-D2 EPS {nome_run} già elaborato (Ultimo blocco: {ultima_ora_valida_str}).")
             return False, "", None
 
-    # Salvataggio del nuovo stato
     with open(FILE_LAST_HOUR, "w") as f:
         f.write(ultima_ora_valida_str)
 
@@ -142,7 +138,7 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
         step_idx = max(0, h - 1)   
         step_str = f"{step_idx:03d}"
         
-        # Sostituito regular-lat-lon con icosahedral
+        # Griglia nativa: icosahedral
         url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
         url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
 
@@ -160,7 +156,7 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
             print(f"    💥 Fallimento definitivo rain_con ora {h}: {e}")
             raise
 
-    # Convertiamo in Xarray (earthkit interpreterà i dati icosaedrali automaticamente)
+    # L'Engine riconoscerà automaticamente la griglia icosaedrale e la interpreterà
     ds_gsp = earthkit.data.from_source("file", tmp_gsp).to_xarray()
     ds_con = earthkit.data.from_source("file", tmp_con).to_xarray()
 
@@ -276,11 +272,19 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             step_timedelta = np.timedelta64(h, 'h')
 
             try:
-               gsp_now = rain_gsp_xr.sel(step=step_timedelta).rain_gsp
-               con_now = rain_con_xr.sel(step=step_timedelta).rain_con
-               prec_diff = gsp_now + con_now
-            except KeyError:
-                print(f"Ora {h} non trovata, salto.")
+                # Estrazione dinamica del nome variabile 
+                gsp_var_name = list(rain_gsp_xr.data_vars)[0]
+                con_var_name = list(rain_con_xr.data_vars)[0]
+
+                gsp_now = rain_gsp_xr.sel(step=step_timedelta)[gsp_var_name]
+                con_now = rain_con_xr.sel(step=step_timedelta)[con_var_name]
+                
+                prec_diff = gsp_now + con_now
+            except KeyError as e:
+                print(f"  ⚠️ Ora {h} non trovata nel Dataset GRIB (KeyError: {e}), salto.")
+                continue
+            except Exception as e:
+                print(f"  ⚠️ Errore imprevisto all'ora {h}: {e}")
                 continue
 
             prob_xr = (prec_diff >= 0.5).astype(float).mean(dim="eps") * 100
