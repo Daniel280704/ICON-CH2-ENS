@@ -9,6 +9,7 @@ import bz2
 import tempfile
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import BoundaryNorm, ListedColormap
 from datetime import datetime, timedelta, timezone
 import warnings
 
@@ -18,8 +19,6 @@ import cartopy.io.shapereader as shpreader
 import xarray as xr
 
 import earthkit.data
-import earthkit.plots
-from earthkit.plots.styles import Style
 from earthkit.data import config
 
 warnings.filterwarnings('ignore')
@@ -34,7 +33,6 @@ RUN_DURATION = 48
 START_DELAY = 0
 
 def fetch_dati_con_retry() -> dict:
-    """Usa Open-Meteo come sentinella per capire quando il run è davvero completo."""
     URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
     params = {
         "latitude": LATITUDE,
@@ -109,17 +107,16 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
 
 def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     """
-    Scarica l'accumulo totale di pioggia (GSP + CON) per una determinata ora esatta,
-    utilizzando la griglia regular-lat-lon per supportare la mappatura 2D in Earthkit.
+    Scarica l'accumulo sulla GRIGLIA NATIVA ICOSAEDRALE corretta per l'Ensemble.
     """
     run_hour_syn = dt_run_utc.hour          
     run_hour = f"{run_hour_syn:02d}"
     date_hour = dt_run_utc.strftime('%Y%m%d%H')
     step_str = f"{h_step:03d}"
     
-    # Torniamo a regular-lat-lon, ma con il prefisso icon-d2-eps_ corretto!
-    url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
-    url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
+    # URL Ripristinato su "icosahedral" per i membri EPS
+    url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
+    url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
 
     def _download_one(url: str):
         for tentativo in range(max_retries):
@@ -139,25 +136,20 @@ def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     p_gsp = _download_one(url_gsp)
     p_con = _download_one(url_con)
 
-    # Carica con Earthkit e converte in Xarray
     ds_gsp = earthkit.data.from_source("file", p_gsp).to_xarray()
     ds_con = earthkit.data.from_source("file", p_con).to_xarray()
 
-    # Rinomina la dimensione ensemble esplicitamente per aggirare l'immutabilità
     if 'member' in ds_gsp.dims: ds_gsp = ds_gsp.rename({'member': 'eps'})
     elif 'number' in ds_gsp.dims: ds_gsp = ds_gsp.rename({'number': 'eps'})
     
     if 'member' in ds_con.dims: ds_con = ds_con.rename({'member': 'eps'})
     elif 'number' in ds_con.dims: ds_con = ds_con.rename({'number': 'eps'})
 
-    # Estrazione dinamica del nome variabile assegnato da eccodes
     gsp_var = list(ds_gsp.data_vars)[0]
     con_var = list(ds_con.data_vars)[0]
     
-    # Sommiamo per ottenere l'accumulo totale fino a quest'ora e carichiamo in RAM (.compute())
     tot_prec = (ds_gsp[gsp_var] + ds_con[con_var]).compute()
 
-    # Chiudiamo i file e ripuliamo il disco
     ds_gsp.close()
     ds_con.close()
     try: os.remove(p_gsp) 
@@ -166,6 +158,7 @@ def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     except: pass
 
     return tot_prec
+
 
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
@@ -256,7 +249,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         print(f"\nGenerazione album probabilità: {block_name}")
         percorsi_foto = []
 
-        # Variabili di cache per il differenziale orario
         prev_step_idx = -1
         prev_tot = None
 
@@ -266,50 +258,69 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
                 curr_tot = scarica_step_precipitazione(dt_run_utc, h)
 
                 if h == 1:
-                    # All'ora 1, l'accumulo da 0 a 1 è semplicemente il valore dell'ora 1
                     prec_oraria = curr_tot
                 else:
-                    # Sfruttiamo la cache per non scaricare due volte l'ora precedente!
                     if prev_step_idx == h - 1 and prev_tot is not None:
                         prec_h_minus_1 = prev_tot
                     else:
                         prec_h_minus_1 = scarica_step_precipitazione(dt_run_utc, h - 1)
-                        
-                    # Calcolo del differenziale (Pioggia caduta ESATTAMENTE in quest'ora)
                     prec_oraria = curr_tot - prec_h_minus_1
 
-                # Aggiorniamo la cache per il giro successivo
                 prev_tot = curr_tot
                 prev_step_idx = h
 
-                # --- Calcolo Probabilità e Disegno ---
+                # --- Calcolo Probabilità e Disegno Diretto ---
                 prob_xr = (prec_oraria >= 0.5).astype(float).mean(dim="eps") * 100
-                prob_xr = prob_xr.where(prob_xr >= 10)
+                
+                # Estraiamo gli array monodimensionali esatti dell'icosaedro
+                lat_vals = prob_xr['latitude'].values
+                lon_vals = prob_xr['longitude'].values
+                prob_vals = prob_xr.values
 
-                chart = earthkit.plots.Map(domain=domain)
-                chart.grid_cells(prob_xr, style=Style(colors=my_colors, levels=my_levels))
+                fig = plt.figure(figsize=(10, 8))
+                ax = plt.axes(projection=ccrs.Mercator())
+                ax.set_extent(domain, crs=ccrs.PlateCarree())
 
-                chart.ax.add_feature(regions_feature)
-                if prov_feature: chart.ax.add_feature(prov_feature)
-                else: chart.borders()
+                ax.add_feature(regions_feature)
+                if prov_feature: ax.add_feature(prov_feature)
+                else: 
+                    ax.coastlines(resolution='10m')
+                    ax.add_feature(cfeature.BORDERS)
 
-                chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
-                for lon, lat, sigla in zip(lons, lats, sigle):
-                    chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
-                    chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
+                # Prepariamo la colormap in base ai tuoi livelli
+                cmap = ListedColormap(my_colors)
+                norm = BoundaryNorm(my_levels, cmap.N)
+
+                # Mascheriamo per alleggerire enormemente il rendering
+                mask = prob_vals >= 10
+                
+                if np.any(mask):
+                    # Lo scatter plot per 500k+ punti è la via più veloce e pulita
+                    sc = ax.scatter(lon_vals[mask], lat_vals[mask], 
+                                    c=prob_vals[mask], cmap=cmap, norm=norm,
+                                    s=4, marker='s', transform=ccrs.PlateCarree(),
+                                    edgecolors='none')
+                    
+                    cbar = plt.colorbar(sc, ax=ax, orientation='horizontal', shrink=0.7, pad=0.05)
+                    cbar.set_label("Probabilità (%)", fontweight='bold')
+
+                # Aggiunta città
+                ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
+                for lo, la, sig in zip(lons, lats, sigle):
+                    ax.plot(lo, la, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
+                    ax.text(lo + 0.05, la + 0.05, sig, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
 
                 start_local = dt_run_local + timedelta(hours=h-1)
                 end_local = dt_run_local + timedelta(hours=h)
                 str_valida = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M del %d/%m')}"
 
                 title = f"ICON-D2 EPS - Probabilità Pioggia >= 0.5 mm/h (%)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
-                chart.title(title)
-                chart.legend(label="Probabilità (%)")
+                plt.title(title, fontweight='bold')
 
                 filename = f"oraria_{h}.png"
-                chart.save(filename)
+                plt.savefig(filename, dpi=200, bbox_inches='tight')
+                plt.close(fig)
                 percorsi_foto.append(filename)
-                plt.close(chart.fig)
 
             except Exception as e:
                 print(f"  ❌ Errore elaborando l'ora {h}: {e}")
