@@ -32,50 +32,79 @@ FILE_LAST_HOUR = "ultima_ora_icon_ruc_eps_prob.txt"
 RUN_DURATION = 27 # ICON-D2-RUC si ferma a 27h
 START_DELAY = 0
 
-def get_latest_ruc_run():
-    """
-    Calcola l'ultimo run ICON-D2-RUC EPS basandosi sull'ora UTC attuale.
-    Interroga direttamente il DWD per run orari (00, 01, 02... 23).
-    """
-    now = datetime.now(timezone.utc)
-    # I file RUC escono molto velocemente, usiamo 1.5 ore di margine di sicurezza
-    dt_safe = now - timedelta(hours=1, minutes=30)
-    dt_run = dt_safe.replace(minute=0, second=0, microsecond=0)
-
-    for attempt in range(4): # Proviamo fino a 4 ore indietro
-        date_hour = dt_run.strftime('%Y%m%d%H')
-        run_hour_str = f"{dt_run.hour:02d}"
-
-        # URL di test per TOT_PREC allo step 001
-        url_test = f"https://opendata.dwd.de/weather/nwp/icon-d2-ruc-eps/grib/{run_hour_str}/tot_prec/icon-d2-ruc-eps_germany_icosahedral_single-level_{date_hour}_001_2d_tot_prec.grib2.bz2"
-        print(f"  🔍 Controllo server DWD per run RUC {run_hour_str}Z...")
-
+def fetch_dati_con_retry() -> dict:
+    URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
+    params = {
+        "latitude": LATITUDE,
+        "longitude": LONGITUDE,
+        "hourly": "temperature_2m", 
+        "models": "dwd_icon_d2_eps_ensemble_mean", # OM non ha ancora il RUC EPS separato
+        "timezone": "Europe/Rome",
+        "past_days": 1,
+        "forecast_days": 2 # 2 giorni bastano per coprire le 27h
+    }
+    headers = {"User-Agent": "MeteoBot-ICONRUC-Mappe/3.0"}
+    for tentativo in range(3):
         try:
-            r = requests.head(url_test, timeout=10)
-            if r.status_code == 200:
-                print(f"  🟢 File trovato! Il run RUC {run_hour_str}Z è online.")
-                nome_run = dt_run.strftime("%H") + "Z"
-
-                if os.path.exists(FILE_LAST_HOUR):
-                    with open(FILE_LAST_HOUR, "r") as f:
-                        ultimo_salvato = f.read().strip()
-                    if date_hour <= ultimo_salvato:
-                        print(f"  ✅ Run ICON-D2-RUC EPS {nome_run} già elaborato in precedenza (Ultimo: {ultimo_salvato}).")
-                        return False, "", None
-
-                with open(FILE_LAST_HOUR, "w") as f:
-                    f.write(date_hour)
-
-                return True, nome_run, dt_run
-            else:
-                print(f"  ⚠️ Run RUC {run_hour_str}Z non ancora disponibile (HTTP {r.status_code})")
+            r = requests.get(URL, params=params, headers=headers, timeout=30)
+            r.raise_for_status()
+            return r.json()
         except Exception as e:
-            print(f"  ❌ Errore testando {run_hour_str}Z: {e}")
+            print(f"⚠️ Errore API Open-Meteo: {e}")
+            time.sleep(15)
+    return {}
 
-        # Scaliamo di 1 ora indietro (il RUC è orario)
-        dt_run -= timedelta(hours=1)
+def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
+    times = hourly_data.get("time", [])
+    mean_vals = hourly_data.get(ref_param, [])
 
-    return False, "", None
+    if not times or not mean_vals: return False, "", None
+
+    end_idx = -1
+    for i in range(len(mean_vals) - 1, -1, -1):
+        if mean_vals[i] is not None:
+            end_idx = i
+            break
+
+    if end_idx == -1: return False, "", None
+
+    ultima_ora_valida_str = times[end_idx]
+
+    dt_end_local = datetime.fromisoformat(ultima_ora_valida_str)
+    dt_end_utc = dt_end_local - timedelta(seconds=utc_offset_sec)
+    
+    # Ricalibrato per il RUC: sottrae 27 ore esatte
+    dt_run_utc_naive = dt_end_utc - timedelta(hours=RUN_DURATION) 
+    dt_start_utc = dt_run_utc_naive + timedelta(hours=START_DELAY)
+
+    dt_start_local = dt_start_utc + timedelta(seconds=utc_offset_sec)
+    start_time_str = dt_start_local.strftime("%Y-%m-%dT%H:%M")
+    nome_run = dt_run_utc_naive.strftime("%H") + "Z"
+
+    try:
+        start_idx = times.index(start_time_str)
+    except ValueError:
+        return False, "", None
+
+    expected_points = RUN_DURATION - START_DELAY + 1
+    actual_points = end_idx - start_idx + 1
+
+    if actual_points < expected_points:
+        print(f"⏳ Run {nome_run} in caricamento su Open-Meteo... ({actual_points}/{expected_points} ore)")
+        return False, "", None
+
+    if os.path.exists(FILE_LAST_HOUR):
+        with open(FILE_LAST_HOUR, "r") as f:
+            ultima_ora_salvata = f.read().strip()
+        if ultima_ora_valida_str <= ultima_ora_salvata:
+            print(f"✅ Run ICON-D2-RUC EPS {nome_run} già elaborato (Ultimo blocco: {ultima_ora_valida_str}).")
+            return False, "", None
+
+    with open(FILE_LAST_HOUR, "w") as f:
+        f.write(ultima_ora_valida_str)
+
+    dt_run_utc = dt_run_utc_naive.replace(tzinfo=timezone.utc)
+    return True, nome_run, dt_run_utc
 
 def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     """
@@ -86,7 +115,7 @@ def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     date_hour = dt_run_utc.strftime('%Y%m%d%H')
     step_str = f"{h_step:03d}"
     
-    # URL Diretto per TOT_PREC del RUC
+    # URL Diretto per TOT_PREC del RUC EPS
     url_tot = f"https://opendata.dwd.de/weather/nwp/icon-d2-ruc-eps/grib/{run_hour}/tot_prec/icon-d2-ruc-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_tot_prec.grib2.bz2"
 
     def _download_one(url: str):
@@ -110,7 +139,6 @@ def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     if 'member' in ds_tot.dims: ds_tot = ds_tot.rename({'member': 'eps'})
     elif 'number' in ds_tot.dims: ds_tot = ds_tot.rename({'number': 'eps'})
 
-    # Estrazione dinamica della variabile
     tot_var = list(ds_tot.data_vars)[0]
     tot_prec = ds_tot[tot_var].compute()
 
@@ -164,7 +192,7 @@ def invia_album_telegram(file_paths: list, caption: str):
 
 def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
     blocchi = {}
-    for h in range(1, RUN_DURATION + 1): # Modificato per 27h
+    for h in range(1, RUN_DURATION + 1): 
         dt_target = dt_run_local + timedelta(hours=h)
         date_str = dt_target.date().strftime("%Y-%m-%d")
         hour = dt_target.hour
@@ -227,7 +255,6 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
                 prev_tot = curr_tot
                 prev_step_idx = h
 
-                # --- Calcolo Probabilità e Disegno Diretto ---
                 prob_xr = (prec_oraria >= 0.5).astype(float).mean(dim="eps") * 100
                 
                 lat_vals = prob_xr['latitude'].values
@@ -288,8 +315,16 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         time.sleep(10)
 
 def main():
-    print("Cerco l'ultimo run completo ICON-D2-RUC EPS direttamente sul server DWD...")
-    is_new, nome_run, dt_run_utc = get_latest_ruc_run()
+    print("Cerco l'ultimo run completo ICON-D2-RUC EPS tramite sentinella Open-Meteo...")
+    data = fetch_dati_con_retry()
+    
+    if not data: 
+        sys.exit(0)
+        
+    hourly = data.get("hourly", {})
+    utc_offset = data.get("utc_offset_seconds", 0)
+    
+    is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m", utc_offset)
 
     if is_new:
         print(f"🚀 Lancio generazione Probabilità Orarie ICON-RUC EPS per il RUN {nome_run} ({dt_run_utc.strftime('%Y-%m-%d %H:%M')})")
