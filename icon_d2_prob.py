@@ -27,7 +27,7 @@ urllib3.disable_warnings()
 config.set("cache-policy", "temporary")
 
 FILE_LAST_HOUR = "ultima_ora_icond2_prob.txt" 
-RUN_DURATION = 27 # ICON-D2 si ferma a 27h
+RUN_DURATION = 48 # Esteso a 48h
 START_DELAY = 1
 
 def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
@@ -35,7 +35,7 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
     Scarica rain_gsp e rain_con dal server DWD OpenData, decomprime i .bz2 in GRIB2 temporanei
     e li carica in due Dataset xarray separati.
     """
-    run_hour_syn = dt_run_utc.hour          # 0,6,12,18
+    run_hour_syn = dt_run_utc.hour          
     run_hour = f"{run_hour_syn:02d}"
     date_hour = dt_run_utc.strftime('%Y%m%d%H')
     tmp_gsp = []
@@ -62,8 +62,10 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
     for h in ore_list:
         step_idx = max(0, h - 1)   # h=1 -> 000, h=2 -> 001, ...
         step_str = f"{step_idx:03d}"
-        url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
-        url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
+        
+        # Prefisso corretto: icon-d2-eps_
+        url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
+        url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
 
         try:
             p_gsp = _download_one(url_gsp, max_retries)
@@ -91,44 +93,49 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
 
 def get_latest_dwd_run():
     """
-    Calcola l'ultimo run ICON-D2 EPS basandosi sull'ora UTC attuale
-    e verifica tramite una richiesta HEAD che il server DWD lo abbia pubblicato.
+    Calcola l'ultimo run ICON-D2 EPS verificandolo direttamente sul server DWD.
+    Gestisce i run ogni 3 ore (00, 03, 06, 09, 12, 15, 18, 21).
     """
     now = datetime.now(timezone.utc)
     # I file escono con circa 1.5 - 2 ore di ritardo. Usiamo 2.5 ore di margine di sicurezza.
     dt_safe = now - timedelta(hours=2, minutes=30)
     
-    run_hour_syn = (dt_safe.hour // 6) * 6  
+    # Arrotondamento ai blocchi di 3 ore
+    run_hour_syn = (dt_safe.hour // 3) * 3  
     dt_run = dt_safe.replace(hour=run_hour_syn, minute=0, second=0, microsecond=0)
 
-    for attempt in range(2):
+    for attempt in range(3):
         date_hour = dt_run.strftime('%Y%m%d%H')
         run_hour_str = f"{dt_run.hour:02d}"
 
-        # Controlliamo se il primissimo file (step 000) del run esiste
-        url_test = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour_str}/rain_gsp/icon-d2_germany_regular-lat-lon_single-level_{date_hour}_000_2d_rain_gsp.grib2.bz2"
+        # Testiamo lo step 000 con il nome corretto
+        url_test = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour_str}/rain_gsp/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_000_2d_rain_gsp.grib2.bz2"
+        print(f"  🔍 Controllo server DWD per run {run_hour_str}Z...")
 
         try:
             r = requests.head(url_test, timeout=10)
             if r.status_code == 200:
+                print(f"  🟢 File trovato! Il run {run_hour_str}Z è online.")
                 nome_run = dt_run.strftime("%H") + "Z"
 
                 if os.path.exists(FILE_LAST_HOUR):
                     with open(FILE_LAST_HOUR, "r") as f:
                         ultimo_salvato = f.read().strip()
                     if date_hour <= ultimo_salvato:
-                        print(f"✅ Run ICON-D2 EPS {nome_run} già elaborato (Ultimo in archivio: {ultimo_salvato}).")
+                        print(f"  ✅ Run ICON-D2 EPS {nome_run} già elaborato in precedenza (Ultimo in archivio: {ultimo_salvato}).")
                         return False, "", None
 
                 with open(FILE_LAST_HOUR, "w") as f:
                     f.write(date_hour)
 
                 return True, nome_run, dt_run
-        except Exception:
-            pass 
+            else:
+                print(f"  ⚠️ Run {run_hour_str}Z non ancora disponibile (Errore HTTP {r.status_code})")
+        except Exception as e:
+            print(f"  ❌ Errore di connessione testando {run_hour_str}Z: {e}")
 
-        # Se non è ancora online, scaliamo al run di 6 ore prima
-        dt_run -= timedelta(hours=6)
+        # Se non è ancora online o dà 404, scaliamo al run di 3 ore prima
+        dt_run -= timedelta(hours=3)
 
     return False, "", None
 
@@ -177,7 +184,7 @@ def invia_album_telegram(file_paths: list, caption: str):
 
 def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
     blocchi = {}
-    for h in range(1, 28): # Limitato a 27h
+    for h in range(1, 49): # Portato a 48h
         dt_target = dt_run_local + timedelta(hours=h)
         date_str = dt_target.date().strftime("%Y-%m-%d")
         hour = dt_target.hour
