@@ -109,16 +109,17 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
 
 def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     """
-    Scarica l'accumulo totale di pioggia (GSP + CON) per una determinata ora esatta.
-    Ritorna un Xarray DataArray pulito, direttamente computato in RAM.
+    Scarica l'accumulo totale di pioggia (GSP + CON) per una determinata ora esatta,
+    utilizzando la griglia regular-lat-lon per supportare la mappatura 2D in Earthkit.
     """
     run_hour_syn = dt_run_utc.hour          
     run_hour = f"{run_hour_syn:02d}"
     date_hour = dt_run_utc.strftime('%Y%m%d%H')
     step_str = f"{h_step:03d}"
     
-    url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
-    url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
+    # Torniamo a regular-lat-lon, ma con il prefisso icon-d2-eps_ corretto!
+    url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
+    url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2-eps_germany_regular-lat-lon_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
 
     def _download_one(url: str):
         for tentativo in range(max_retries):
