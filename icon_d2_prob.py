@@ -26,8 +26,6 @@ warnings.filterwarnings('ignore')
 urllib3.disable_warnings()
 config.set("cache-policy", "temporary")
 
-LATITUDE = 45.07
-LONGITUDE = 7.54
 FILE_LAST_HOUR = "ultima_ora_icond2_prob.txt" 
 RUN_DURATION = 27 # ICON-D2 si ferma a 27h
 START_DELAY = 1
@@ -37,11 +35,9 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
     Scarica rain_gsp e rain_con dal server DWD OpenData, decomprime i .bz2 in GRIB2 temporanei
     e li carica in due Dataset xarray separati.
     """
-    run_hour_raw = dt_run_utc.hour
-    run_hour_syn = (run_hour_raw // 6) * 6          # 0,6,12,18
+    run_hour_syn = dt_run_utc.hour          # 0,6,12,18
     run_hour = f"{run_hour_syn:02d}"
-    dt_run_dwd = dt_run_utc.replace(hour=run_hour_syn, minute=0, second=0, microsecond=0)
-    date_hour = dt_run_dwd.strftime('%Y%m%d%H')
+    date_hour = dt_run_utc.strftime('%Y%m%d%H')
     tmp_gsp = []
     tmp_con = []
 
@@ -92,74 +88,49 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
         ds_con = ds_con.rename({'number': 'eps'})
 
     return ds_gsp, ds_con, (tmp_gsp + tmp_con)
-def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) -> tuple[bool, str, datetime]:
-    times = hourly_data.get("time", [])
-    mean_vals = hourly_data.get(ref_param, [])
-    if not times or not mean_vals: return False, "", None
 
-    end_idx = -1
-    for i in range(len(mean_vals) - 1, -1, -1):
-        if mean_vals[i] is not None:
-            end_idx = i
-            break
+def get_latest_dwd_run():
+    """
+    Calcola l'ultimo run ICON-D2 EPS basandosi sull'ora UTC attuale
+    e verifica tramite una richiesta HEAD che il server DWD lo abbia pubblicato.
+    """
+    now = datetime.now(timezone.utc)
+    # I file escono con circa 1.5 - 2 ore di ritardo. Usiamo 2.5 ore di margine di sicurezza.
+    dt_safe = now - timedelta(hours=2, minutes=30)
+    
+    run_hour_syn = (dt_safe.hour // 6) * 6  
+    dt_run = dt_safe.replace(hour=run_hour_syn, minute=0, second=0, microsecond=0)
 
-    if end_idx == -1: return False, "", None
+    for attempt in range(2):
+        date_hour = dt_run.strftime('%Y%m%d%H')
+        run_hour_str = f"{dt_run.hour:02d}"
 
-    ultima_ora_valida_str = times[end_idx]
+        # Controlliamo se il primissimo file (step 000) del run esiste
+        url_test = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour_str}/rain_gsp/icon-d2_germany_regular-lat-lon_single-level_{date_hour}_000_2d_rain_gsp.grib2.bz2"
 
-    dt_end_local = datetime.fromisoformat(ultima_ora_valida_str)
-    dt_end_utc = dt_end_local - timedelta(seconds=utc_offset_sec)
-    dt_run_utc_naive = dt_end_utc - timedelta(hours=RUN_DURATION)
-    dt_start_utc = dt_run_utc_naive + timedelta(hours=START_DELAY)
-
-    dt_start_local = dt_start_utc + timedelta(seconds=utc_offset_sec)
-    start_time_str = dt_start_local.strftime("%Y-%m-%dT%H:%M")
-    nome_run = dt_run_utc_naive.strftime("%H") + "Z"
-
-    try:
-        start_idx = times.index(start_time_str)
-    except ValueError:
-        return False, "", None
-
-    expected_points = RUN_DURATION - START_DELAY + 1
-    actual_points = end_idx - start_idx + 1
-
-    if actual_points < expected_points:
-        print(f"⏳ Run {nome_run} in caricamento... ({actual_points}/{expected_points} ore)")
-        return False, "", None
-
-    if os.path.exists(FILE_LAST_HOUR):
-        with open(FILE_LAST_HOUR, "r") as f:
-            ultima_ora_salvata = f.read().strip()
-        if ultima_ora_valida_str <= ultima_ora_salvata:
-            print(f"✅ Run ICON-D2 EPS {nome_run} (Probabilità) già elaborato (Ultimo blocco: {ultima_ora_valida_str}).")
-            return False, "", None
-
-    with open(FILE_LAST_HOUR, "w") as f:
-        f.write(ultima_ora_valida_str)
-
-    dt_run_utc = dt_run_utc_naive.replace(tzinfo=timezone.utc)
-    return True, nome_run, dt_run_utc
-
-def fetch_dati_con_retry() -> dict:
-    URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
-    params = {
-        "latitude": LATITUDE,
-        "longitude": LONGITUDE,
-        "hourly": "temperature_2m",
-        "models": "icon_d2",
-        "timezone": "Europe/Rome",
-        "past_days": 1,
-        "forecast_days": 3 
-    }
-    for _ in range(3):
         try:
-            r = requests.get(URL, params=params, timeout=30)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            time.sleep(15)
-    return {}
+            r = requests.head(url_test, timeout=10)
+            if r.status_code == 200:
+                nome_run = dt_run.strftime("%H") + "Z"
+
+                if os.path.exists(FILE_LAST_HOUR):
+                    with open(FILE_LAST_HOUR, "r") as f:
+                        ultimo_salvato = f.read().strip()
+                    if date_hour <= ultimo_salvato:
+                        print(f"✅ Run ICON-D2 EPS {nome_run} già elaborato (Ultimo in archivio: {ultimo_salvato}).")
+                        return False, "", None
+
+                with open(FILE_LAST_HOUR, "w") as f:
+                    f.write(date_hour)
+
+                return True, nome_run, dt_run
+        except Exception:
+            pass 
+
+        # Se non è ancora online, scaliamo al run di 6 ore prima
+        dt_run -= timedelta(hours=6)
+
+    return False, "", None
 
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
@@ -233,10 +204,10 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     my_levels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#cc0000", "#ff00ff", "#800080"]
-    
+
     domain = [xmin, xmax, ymin, ymax]
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
-    
+
     prov_feature = None
     shp_path = "shapefiles/ProvCM01012026_WGS84.shp"
     if os.path.exists(shp_path):
@@ -264,8 +235,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
         for h in ore_list:
             step_timedelta = np.timedelta64(h, 'h')
-            step_prev_timedelta = np.timedelta64(h-1, 'h')
-            
+
             try:
                gsp_now = rain_gsp_xr.sel(step=step_timedelta).rain_gsp
                con_now = rain_con_xr.sel(step=step_timedelta).rain_con
@@ -278,8 +248,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
             prob_xr = prob_xr.where(prob_xr >= 10)
 
             chart = earthkit.plots.Map(domain=domain)
-            
-            # Passando direttamente la variabile Xarray, earthkit mappa la griglia nativa DWD
+
             chart.grid_cells(prob_xr, style=Style(colors=my_colors, levels=my_levels))
 
             chart.ax.add_feature(regions_feature)
@@ -313,19 +282,14 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
         time.sleep(15)
 
 def main():
-    print("Cerco l'ultimo run completo ICON-D2 via Open-Meteo per le probabilità...")
-    data = fetch_dati_con_retry()
-    if not data: sys.exit(0)
-
-    hourly = data.get("hourly", {})
-    utc_offset = data.get("utc_offset_seconds", 0)
-    is_new, nome_run, dt_run_utc = estrai_limiti_run(hourly, "temperature_2m", utc_offset)
+    print("Cerco l'ultimo run completo ICON-D2 EPS direttamente sul server DWD...")
+    is_new, nome_run, dt_run_utc = get_latest_dwd_run()
 
     if is_new:
-        print(f"🚀 Lancio generazione Probabilità Orarie ICON-D2 per il RUN {nome_run} ({dt_run_utc})")
+        print(f"🚀 Lancio generazione Probabilità Orarie ICON-D2 per il RUN {nome_run} ({dt_run_utc.strftime('%Y-%m-%d %H:%M')})")
         genera_album_orari(dt_run_utc, nome_run)
     else:
-        print("Nessun nuovo run completo trovato. Uscita.")
+        print("Nessun nuovo run trovato. Uscita.")
 
 if __name__ == "__main__":
     main()
