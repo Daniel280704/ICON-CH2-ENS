@@ -19,7 +19,6 @@ import xarray as xr
 
 import earthkit.data
 import earthkit.plots
-from earthkit.plots.geo import bounds, domains
 from earthkit.plots.styles import Style
 from earthkit.data import config
 
@@ -216,7 +215,7 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     my_levels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#cc0000", "#ff00ff", "#800080"]
     
-    domain = domains.Domain.from_bbox(bbox=bounds.BoundingBox(xmin, xmax, ymin, ymax, ccrs.Geodetic()), name="Piemonte")
+    domain = [xmin, xmax, ymin, ymax]
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
     
     prov_feature = None
