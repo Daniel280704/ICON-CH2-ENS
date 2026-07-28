@@ -37,9 +37,11 @@ def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
     Scarica rain_gsp e rain_con dal server DWD OpenData, decomprime i .bz2 in GRIB2 temporanei
     e li carica in due Dataset xarray separati.
     """
-    run_hour = dt_run_utc.strftime('%H')
-    date_hour = dt_run_utc.strftime('%Y%m%d%H')
-
+    run_hour_raw = dt_run_utc.hour
+    run_hour_syn = (run_hour_raw // 6) * 6          # 0,6,12,18
+    run_hour = f"{run_hour_syn:02d}"
+    dt_run_dwd = dt_run_utc.replace(hour=run_hour_syn, minute=0, second=0, microsecond=0)
+    date_hour = dt_run_dwd.strftime('%Y%m%d%H')
     tmp_gsp = []
     tmp_con = []
 
