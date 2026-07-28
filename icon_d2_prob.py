@@ -39,7 +39,7 @@ def fetch_dati_con_retry() -> dict:
     params = {
         "latitude": LATITUDE,
         "longitude": LONGITUDE,
-        "hourly": "temperature_2m", # Ci basta un parametro per capire a che punto è il run
+        "hourly": "temperature_2m", 
         "models": "dwd_icon_d2_eps_ensemble_mean",
         "timezone": "Europe/Rome",
         "past_days": 1,
@@ -106,66 +106,64 @@ def estrai_limiti_run(hourly_data: dict, ref_param: str, utc_offset_sec: int) ->
     dt_run_utc = dt_run_utc_naive.replace(tzinfo=timezone.utc)
     return True, nome_run, dt_run_utc
 
-def scarica_pioggia_icon_d2(dt_run_utc, ore_list, max_retries=3):
+
+def scarica_step_precipitazione(dt_run_utc, h_step, max_retries=3):
     """
-    Scarica rain_gsp e rain_con dal server DWD OpenData usando l'orario fornito da Open-Meteo.
+    Scarica l'accumulo totale di pioggia (GSP + CON) per una determinata ora esatta.
+    Ritorna un Xarray DataArray pulito, direttamente computato in RAM.
     """
     run_hour_syn = dt_run_utc.hour          
     run_hour = f"{run_hour_syn:02d}"
     date_hour = dt_run_utc.strftime('%Y%m%d%H')
-    tmp_gsp = []
-    tmp_con = []
+    step_str = f"{h_step:03d}"
+    
+    url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
+    url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
 
-    def _download_one(url: str, max_retries: int):
+    def _download_one(url: str):
         for tentativo in range(max_retries):
             try:
                 r = requests.get(url, stream=True, timeout=30)
                 r.raise_for_status()
-
                 fd, temp_path = tempfile.mkstemp(suffix=".grib2")
                 with os.fdopen(fd, 'wb') as f_out:
                     decompressor = bz2.BZ2Decompressor()
                     for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            f_out.write(decompressor.decompress(chunk))
+                        if chunk: f_out.write(decompressor.decompress(chunk))
                 return temp_path
             except Exception as e:
-                if tentativo == max_retries - 1:
-                    raise e
-                time.sleep(10 * (tentativo + 1))
+                if tentativo == max_retries - 1: raise e
+                time.sleep(5 * (tentativo + 1))
 
-    for h in ore_list:
-        step_idx = max(0, h - 1)   
-        step_str = f"{step_idx:03d}"
-        
-        # Griglia nativa: icosahedral
-        url_gsp = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_gsp/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_gsp.grib2.bz2"
-        url_con = f"https://opendata.dwd.de/weather/nwp/icon-d2-eps/grib/{run_hour}/rain_con/icon-d2-eps_germany_icosahedral_single-level_{date_hour}_{step_str}_2d_rain_con.grib2.bz2"
+    p_gsp = _download_one(url_gsp)
+    p_con = _download_one(url_con)
 
-        try:
-            p_gsp = _download_one(url_gsp, max_retries)
-            tmp_gsp.append(p_gsp)
-        except Exception as e:
-            print(f"    💥 Fallimento definitivo rain_gsp ora {h}: {e}")
-            raise
+    # Carica con Earthkit e converte in Xarray
+    ds_gsp = earthkit.data.from_source("file", p_gsp).to_xarray()
+    ds_con = earthkit.data.from_source("file", p_con).to_xarray()
 
-        try:
-            p_con = _download_one(url_con, max_retries)
-            tmp_con.append(p_con)
-        except Exception as e:
-            print(f"    💥 Fallimento definitivo rain_con ora {h}: {e}")
-            raise
+    # Rinomina la dimensione ensemble ('member' per DWD EPS) in 'eps'
+    for ds_temp in (ds_gsp, ds_con):
+        if 'member' in ds_temp.dims: ds_temp = ds_temp.rename({'member': 'eps'})
+        elif 'number' in ds_temp.dims: ds_temp = ds_temp.rename({'number': 'eps'})
 
-    # L'Engine riconoscerà automaticamente la griglia icosaedrale e la interpreterà
-    ds_gsp = earthkit.data.from_source("file", tmp_gsp).to_xarray()
-    ds_con = earthkit.data.from_source("file", tmp_con).to_xarray()
+    # Estrazione dinamica del nome variabile assegnato da eccodes
+    gsp_var = list(ds_gsp.data_vars)[0]
+    con_var = list(ds_con.data_vars)[0]
+    
+    # Sommiamo per ottenere l'accumulo totale fino a quest'ora e carichiamo in RAM (.compute())
+    tot_prec = (ds_gsp[gsp_var] + ds_con[con_var]).compute()
 
-    if 'number' in ds_gsp.dims:
-        ds_gsp = ds_gsp.rename({'number': 'eps'})
-    if 'number' in ds_con.dims:
-        ds_con = ds_con.rename({'number': 'eps'})
+    # Chiudiamo i file e ripuliamo il disco
+    ds_gsp.close()
+    ds_con.close()
+    try: os.remove(p_gsp) 
+    except: pass
+    try: os.remove(p_con) 
+    except: pass
 
-    return ds_gsp, ds_con, (tmp_gsp + tmp_con)
+    return tot_prec
+
 
 def invia_album_telegram(file_paths: list, caption: str):
     token = os.getenv("TELEGRAM_TOKEN")
@@ -178,7 +176,6 @@ def invia_album_telegram(file_paths: list, caption: str):
         url = f"https://api.telegram.org/bot{token}/sendPhoto"
         payload = {"chat_id": chat_id, "caption": caption}
         if thread_id: payload["message_thread_id"] = thread_id
-
         try:
             with open(file_paths[0], "rb") as photo:
                 requests.post(url, data=payload, files={"photo": photo})
@@ -210,6 +207,7 @@ def invia_album_telegram(file_paths: list, caption: str):
         for f in files.values():
             f.close()
 
+
 def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
     blocchi = {}
     for h in range(1, 49): 
@@ -231,6 +229,7 @@ def raggruppa_in_blocchi(dt_run_local: datetime) -> dict:
         blocchi[key].append(h)
     return blocchi
 
+
 def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     rome_tz = pytz.timezone("Europe/Rome")
     dt_run_local = dt_run_utc.astimezone(rome_tz)
@@ -239,10 +238,9 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
     xmin, xmax, ymin, ymax = 6.0, 10.5, 43.5, 46.8
     my_levels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     my_colors = ["#a0e6ff", "#00a0ff", "#00ff00", "#ffff00", "#ffaa00", "#ff0000", "#cc0000", "#ff00ff", "#800080"]
-
     domain = [xmin, xmax, ymin, ymax]
+    
     regions_feature = cfeature.NaturalEarthFeature('cultural', 'admin_1_states_provinces', '10m', edgecolor='black', facecolor='none', linewidth=1.5)
-
     prov_feature = None
     shp_path = "shapefiles/ProvCM01012026_WGS84.shp"
     if os.path.exists(shp_path):
@@ -254,75 +252,75 @@ def genera_album_orari(dt_run_utc: datetime, nome_run: str):
 
     for block_name, ore_list in blocchi.items():
         print(f"\nGenerazione album probabilità: {block_name}")
-        lead_times_needed = list(ore_list)
-        if ore_list[0] > 1:
-            lead_times_needed.insert(0, ore_list[0] - 1)
-
-        try:
-            print(f"  ⬇️  Scarico dati RAIN_GSP + RAIN_CON dal DWD per {len(lead_times_needed)} ore...")
-            rain_gsp_xr, rain_con_xr, tmp_files = scarica_pioggia_icon_d2(dt_run_utc, lead_times_needed)
-            print(f"  ✅ Dati scaricati e decodificati.")
-        except Exception as e:
-            print(f"  ❌ Salto il blocco {block_name}. Errore: {e}")
-            continue
-
         percorsi_foto = []
 
+        # Variabili di cache per il differenziale orario
+        prev_step_idx = -1
+        prev_tot = None
+
         for h in ore_list:
-            step_timedelta = np.timedelta64(h, 'h')
-
             try:
-                # Estrazione dinamica del nome variabile 
-                gsp_var_name = list(rain_gsp_xr.data_vars)[0]
-                con_var_name = list(rain_con_xr.data_vars)[0]
+                print(f"  ⬇️  Elaborazione accumulo orario H={h}...")
+                curr_tot = scarica_step_precipitazione(dt_run_utc, h)
 
-                gsp_now = rain_gsp_xr.sel(step=step_timedelta)[gsp_var_name]
-                con_now = rain_con_xr.sel(step=step_timedelta)[con_var_name]
-                
-                prec_diff = gsp_now + con_now
-            except KeyError as e:
-                print(f"  ⚠️ Ora {h} non trovata nel Dataset GRIB (KeyError: {e}), salto.")
-                continue
+                if h == 1:
+                    # All'ora 1, l'accumulo da 0 a 1 è semplicemente il valore dell'ora 1
+                    prec_oraria = curr_tot
+                else:
+                    # Sfruttiamo la cache per non scaricare due volte l'ora precedente!
+                    if prev_step_idx == h - 1 and prev_tot is not None:
+                        prec_h_minus_1 = prev_tot
+                    else:
+                        prec_h_minus_1 = scarica_step_precipitazione(dt_run_utc, h - 1)
+                        
+                    # Calcolo del differenziale (Pioggia caduta ESATTAMENTE in quest'ora)
+                    prec_oraria = curr_tot - prec_h_minus_1
+
+                # Aggiorniamo la cache per il giro successivo
+                prev_tot = curr_tot
+                prev_step_idx = h
+
+                # --- Calcolo Probabilità e Disegno ---
+                prob_xr = (prec_oraria >= 0.5).astype(float).mean(dim="eps") * 100
+                prob_xr = prob_xr.where(prob_xr >= 10)
+
+                chart = earthkit.plots.Map(domain=domain)
+                chart.grid_cells(prob_xr, style=Style(colors=my_colors, levels=my_levels))
+
+                chart.ax.add_feature(regions_feature)
+                if prov_feature: chart.ax.add_feature(prov_feature)
+                else: chart.borders()
+
+                chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
+                for lon, lat, sigla in zip(lons, lats, sigle):
+                    chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
+                    chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
+
+                start_local = dt_run_local + timedelta(hours=h-1)
+                end_local = dt_run_local + timedelta(hours=h)
+                str_valida = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M del %d/%m')}"
+
+                title = f"ICON-D2 EPS - Probabilità Pioggia >= 0.5 mm/h (%)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
+                chart.title(title)
+                chart.legend(label="Probabilità (%)")
+
+                filename = f"oraria_{h}.png"
+                chart.save(filename)
+                percorsi_foto.append(filename)
+                plt.close(chart.fig)
+
             except Exception as e:
-                print(f"  ⚠️ Errore imprevisto all'ora {h}: {e}")
+                print(f"  ❌ Errore elaborando l'ora {h}: {e}")
                 continue
 
-            prob_xr = (prec_diff >= 0.5).astype(float).mean(dim="eps") * 100
-            prob_xr = prob_xr.where(prob_xr >= 10)
-
-            chart = earthkit.plots.Map(domain=domain)
-
-            chart.grid_cells(prob_xr, style=Style(colors=my_colors, levels=my_levels))
-
-            chart.ax.add_feature(regions_feature)
-            if prov_feature: chart.ax.add_feature(prov_feature)
-            else: chart.borders()
-
-            chart.ax.plot(7.51, 45.07, marker='o', color='brown', markersize=6, transform=ccrs.PlateCarree())
-            for lon, lat, sigla in zip(lons, lats, sigle):
-                chart.ax.plot(lon, lat, marker='o', color='black', markersize=3, transform=ccrs.PlateCarree())
-                chart.ax.text(lon + 0.05, lat + 0.05, sigla, color='black', fontsize=9, fontweight='bold', transform=ccrs.PlateCarree())
-
-            start_local = dt_run_local + timedelta(hours=h-1)
-            end_local = dt_run_local + timedelta(hours=h)
-            str_valida = f"{start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M del %d/%m')}"
-
-            title = f"ICON-D2 EPS - Probabilità Pioggia >= 0.5 mm/h (%)\nRun: {dt_run_utc.strftime('%d/%m/%Y %H:%M UTC')} | {str_valida}"
-            chart.title(title)
-            chart.legend(label="Probabilità (%)")
-
-            filename = f"oraria_{h}.png"
-            chart.save(filename)
-            percorsi_foto.append(filename)
-            plt.close(chart.fig)
-
-        caption_album = f"ICON-D2 EPS: Probabilità Pioggia oraria >= 0.5 mm\n{block_name}\nRun {nome_run}"
-        invia_album_telegram(percorsi_foto, caption_album)
-
-        for f in percorsi_foto + tmp_files:
-            if os.path.exists(f): os.remove(f)
-        del rain_gsp_xr, rain_con_xr
-        time.sleep(15)
+        if percorsi_foto:
+            caption_album = f"ICON-D2 EPS: Probabilità Pioggia oraria >= 0.5 mm\n{block_name}\nRun {nome_run}"
+            invia_album_telegram(percorsi_foto, caption_album)
+            
+            for f in percorsi_foto:
+                if os.path.exists(f): os.remove(f)
+                
+        time.sleep(10)
 
 def main():
     print("Cerco l'ultimo run completo ICON-D2 EPS tramite la sentinella Open-Meteo...")
