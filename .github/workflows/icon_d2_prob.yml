@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # Ogni ora al minuto 15 (modifica se vuoi)
-    - cron: "15 * * * *"
+    #- cron: "15 * * * *"
 
 jobs:
   run-icon-d2-prob:
